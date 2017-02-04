@@ -1,16 +1,8 @@
+import logging
+import time
 from typing import List
 
-import time
-
-from hvapi.wmi_utils import WmiHelper, get_wmi_object_properties, wait_for_wmi_job, \
-  IntEnum, RangedCodeEnum
-
-HYPERV_VM_STATE_ENABLED = 2
-HYPERV_VM_STATE_DISABLED = 3
-HYPERV_VM_STATE_REBOOT = 10
-HYPERV_VM_STATE_RESET = 11
-HYPERV_VM_STATE_PAUSED = 32768
-HYPERV_VM_STATE_SUSPENDED = 32769
+from hvapi.wmi_utils import WmiHelper, get_wmi_object_properties, wait_for_wmi_job, IntEnum, RangedCodeEnum
 
 
 class WmiObjectWrapper(object):
@@ -41,121 +33,182 @@ class VirtualSwitch(WmiObjectWrapper):
     return self.wmi_object.Name
 
 
+class _ComputerSystemEnabledState(IntEnum):
+  """
+  For internal usage only. Represents actual state of Machine. It is Msvm_ComputerSystem.EnabledState property.
+  """
+  Unknown = 0
+  Other = 1
+  Enabled = 2  # running
+  Disabled = 3  # stopped
+  ShuttingDown = 4
+  NotApplicable = 5
+  EnabledButOffline = 6  # saved
+  InTest = 7
+  Deferred = 8
+  Quiesce = 9  # paused
+  Starting = 10
+
+
+class _ComputerSystemRequestedState(IntEnum):
+  """
+  For internal usage only. Passed to Msvm_ComputerSystem.RequestStateChange method call.
+  """
+  Other = 1
+  Running = 2
+  Off = 3
+  Stopping = 4
+  Saved = 6
+  Paused = 9
+  Starting = 10
+  Reset = 11
+  Saving = 32773
+  Pausing = 32776
+  Resuming = 32777
+  FastSaved = 32779
+  FastSaving = 32780
+
+
+class _ShutdownComponentOperationalStatus(IntEnum):
+  """
+  For internal usage only. Msvm_ShutdownComponent.OperationalStatus property.
+  """
+  OK = 2
+  Degraded = 3
+  NonRecoverableError = 7
+  NoContact = 12
+  LostCommunication = 13
+
+
+class _ComputerSystemRequestStateChangeCodes(RangedCodeEnum):
+  """
+  For internal usage only. Msvm_ComputerSystem.RequestStateChange method call error codes.
+  """
+  CompletedWithNoError = (0,)
+  MethodParametersChecked_TransitionStarted = (4096,)
+  AccessDenied = (32769,)
+  InvalidStateForThisOperation = (32775,)
+
+
 class VirtualMachine(WmiObjectWrapper):
-  class EnabledState(IntEnum):
-    """
-    For internal usage only. Represents actual state of Machine. It is Msvm_ComputerSystem.EnabledState property.
-    """
-    Unknown = 0
-    Other = 1
-    Enabled = 2  # running
-    Disabled = 3  # stopped
-    ShuttingDown = 4
-    NotApplicable = 5
-    EnabledButOffline = 6  # saved
-    InTest = 7
-    Deferred = 8
-    Quiesce = 9  # paused
-    Starting = 10
-
-  class RequestedState(IntEnum):
-    """
-    For internal usage only. Passed to Msvm_ComputerSystem.RequestStateChange method call.
-    """
-    Other = 1
-    Running = 2
-    Off = 3
-    Stopping = 4
-    Saved = 6
-    Paused = 9
-    Starting = 10
-    Reset = 11
-    Saving = 32773
-    Pausing = 32776
-    Resuming = 32777
-    FastSaved = 32779
-    FastSaving = 32780
-
-  class ShutdownComponentOperationalStatus(IntEnum):
-    """
-    For internal usage only. Msvm_ShutdownComponent.OperationalStatus property.
-    """
-    OK = 2
-    Degraded = 3
-    NonRecoverableError = 7
-    NoContact = 12
-    LostCommunication = 13
-
-  class RequestStateChangeCodes(RangedCodeEnum):
-    """
-    For internal usage only. Msvm_ComputerSystem.RequestStateChange method call error codes.
-    """
-    CompletedWithNoError = (0,)
-    MethodParametersChecked_TransitionStarted = (4096,)
-    AccessDenied = (32769,)
-    InvalidStateForThisOperation = (32775,)
+  LOG = logging.getLogger("VirtualMachine")
 
   @property
-  def name(self):
+  def name(self) -> str:
+    """
+    Virtual machine name that displayed everywhere in windows UI and other places.
+
+    :return: virtual machine name
+    """
     return self.wmi_object.ElementName
 
   @property
-  def id(self):
+  def id(self) -> str:
+    """
+    Unique virtual machine identifier.
+
+    :return: virtual machine identifier
+    """
     return self.wmi_object.Name
 
-  def _change_machine_state(self, desired_state):
-    job, ret_code = self.wmi_object.RequestStateChange(desired_state.value)
-    rscc = self.RequestStateChangeCodes.from_code(ret_code)
-    if rscc not in (self.RequestStateChangeCodes.CompletedWithNoError,
-                    self.RequestStateChangeCodes.MethodParametersChecked_TransitionStarted):
-      raise Exception("Failed to change machine state to '%s' with result '%s'" % (desired_state, rscc))
-    if rscc == self.RequestStateChangeCodes.MethodParametersChecked_TransitionStarted:
-      wait_for_wmi_job(job)
+  @property
+  def state(self) -> _ComputerSystemEnabledState:
+    """
+    Current virtual machine state.
 
-  def _get_shutdown_component(self):
-    shutdown_component = self.wmi_object.associators(wmi_result_class="Msvm_ShutdownComponent")
-    if shutdown_component:
-      shutdown_component = shutdown_component[0]
-      operational_status = self.ShutdownComponentOperationalStatus.from_code(shutdown_component.OperationalStatus[0])
-      if operational_status in (
-          self.ShutdownComponentOperationalStatus.OK, self.ShutdownComponentOperationalStatus.Degraded):
-        return shutdown_component
+    :return: virtual machine state
+    """
+    self.reload()
+    return _ComputerSystemEnabledState.from_code(self.wmi_object.EnabledState)
 
-  def start(self):
-    self._change_machine_state(self.RequestedState.Running)
-    if not self.wait_for_state(self.EnabledState.Enabled, timeout=60):
-      raise Exception("Failed to put machine to '%s' in 60 seconds" % self.EnabledState.Enabled)
+  def start(self, timeout=60):
+    """
+    Try to start virtual machine and wait for started state for ``timeout`` seconds.
 
-  def save(self):
-    self._change_machine_state(self.RequestedState.Saved)
+    :param timeout: time to wait for started state
+    """
+    self.LOG.debug("Starting machine '%s'", self.id)
+    self._request_machine_state(_ComputerSystemRequestedState.Running)
+    if not self.wait_for_state(_ComputerSystemEnabledState.Enabled, timeout=timeout):
+      raise Exception("Failed to put machine to '%s' in %s seconds" % (_ComputerSystemEnabledState.Enabled, timeout))
+    self.LOG.debug("Started machine '%s'", self.id)
 
-  def stop(self, hard=False):
+  def save(self, timeout=60):
+    """
+    Try to save virtual machine state and wait for saved state for ``timeout`` seconds.
+
+    :param timeout: time to wait for saved state
+    """
+    self.LOG.debug("Saving machine '%s'", self.id)
+    self._request_machine_state(_ComputerSystemRequestedState.Saved)
+    if not self.wait_for_state(_ComputerSystemEnabledState.EnabledButOffline, timeout=60):
+      raise Exception(
+        "Failed to put machine to '%s' in %s seconds" % (_ComputerSystemEnabledState.EnabledButOffline, timeout))
+    self.LOG.debug("Saved machine '%s'", self.id)
+
+  def stop(self, hard=False, timeout=60):
+    """
+    Try to stop virtual machine and wait for stopped state for ``timeout`` seconds. If ``hard`` equals to ``False``
+    graceful stop will be performed. This function can wait twice of ``timeout`` value in case ``hard=False``, first
+    time it will wait for graceful stop and second - for hard stop.
+
+    :param hard: indicates if we need to perform hard stop
+    :param timeout: time to wait for stopped state
+    """
+    self.LOG.debug("Stopping machine '%s'", self.id)
     if not hard:
       shutdown_component = self._get_shutdown_component()
       if shutdown_component:
         result = shutdown_component.InitiateShutdown(True, "hyper-v api shutdown")
-        if result[0] != 0 or (result[0] == 0 and not self.wait_for_state(self.EnabledState.Disabled, timeout=60)):
-          # TODO log that graceful stop failed
-          self._change_machine_state(self.RequestedState.Off)
+        if result[0] != 0 or (
+                result[0] == 0 and not self.wait_for_state(_ComputerSystemEnabledState.Disabled, timeout=timeout)):
+          self.LOG.debug("Failed to gracefully stop machine '%s', killing it", self.id)
+          self._request_machine_state(_ComputerSystemRequestedState.Off)
     else:
-      self._change_machine_state(self.RequestedState.Off)
+      self._request_machine_state(_ComputerSystemRequestedState.Off)
+    if not self.wait_for_state(_ComputerSystemEnabledState.Disabled, timeout=timeout):
+      raise Exception(
+        "Failed to put machine to '%s' in %s seconds" % (_ComputerSystemEnabledState.EnabledButOffline, timeout))
+    self.LOG.debug("Stopped machine '%s'", self.id)
 
-  @property
-  def state(self):
-    self.reload()
-    return self.EnabledState.from_code(self.wmi_object.EnabledState)
+  def wait_for_state(self, state: _ComputerSystemEnabledState, timeout=60):
+    """
+    Wait for given ``state`` of machine.
 
-  def wait_for_state(self, state: EnabledState, timeout=60):
+    :param state: state to wait for
+    :param timeout: time to wait for state
+    :return: ``True`` if given ``state`` reached in ``timeout`` seconds, otherwise ``False``
+    """
     def _while_condition(start_time=None):
       if timeout:
         return (time.time() - start_time) < timeout
       return True
 
-    start_time = time.time()
-    while _while_condition(start_time):
+    _begin = time.time()
+    while _while_condition(_begin):
       if state == self.state:
         return True
+      time.sleep(0.5)
     return state == self.state
+
+  # PRIVATE
+  def _request_machine_state(self, desired_state: _ComputerSystemRequestedState):
+    job, ret_code = self.wmi_object.RequestStateChange(desired_state.value)
+    rscc = _ComputerSystemRequestStateChangeCodes.from_code(ret_code)
+    if rscc not in (_ComputerSystemRequestStateChangeCodes.CompletedWithNoError,
+                    _ComputerSystemRequestStateChangeCodes.MethodParametersChecked_TransitionStarted):
+      raise Exception("Failed to change machine state to '%s' with result '%s'" % (desired_state, rscc))
+    if rscc == _ComputerSystemRequestStateChangeCodes.MethodParametersChecked_TransitionStarted:
+      wait_for_wmi_job(job)
+    self.LOG.debug("Requested state '%s' of machine '%s' successfully", desired_state, self.id)
+
+  def _get_shutdown_component(self):
+    shutdown_component = self.wmi_object.associators(wmi_result_class="Msvm_ShutdownComponent")
+    if shutdown_component:
+      shutdown_component = shutdown_component[0]
+      operational_status = _ShutdownComponentOperationalStatus.from_code(shutdown_component.OperationalStatus[0])
+      if operational_status in (_ShutdownComponentOperationalStatus.OK, _ShutdownComponentOperationalStatus.Degraded):
+        return shutdown_component
 
 
 class HypervHost(object):
@@ -202,9 +255,6 @@ class HypervHost(object):
     return self._by_id(machine_id, self.machines)
 
 
-import pprint
-
-
 def measure_time(func, *args, **kwargs):
   start = time.time()
   try:
@@ -213,11 +263,12 @@ def measure_time(func, *args, **kwargs):
     print("Call took:", time.time() - start)
 
 
+FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+logging.basicConfig(format=FORMAT, level=logging.DEBUG)
 host = HypervHost()
 res = HypervHost()
 machine = host.machine_by_name("linux")
-# machine.start()
-# machine.save()
+
 machine.start()
 print(machine.state)
 machine.stop()
