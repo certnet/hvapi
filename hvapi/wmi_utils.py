@@ -1,3 +1,4 @@
+import time
 from enum import Enum
 from typing import Tuple, Callable, Iterable
 
@@ -109,3 +110,50 @@ def get_wmi_object_properties(obj: wmi._wmi_object):
   for prop in obj._properties:
     result[prop] = getattr(obj, prop)
   return result
+
+
+class RangedCodeEnum(Enum):
+  @classmethod
+  def from_code(cls, value):
+    for enum_item in list(cls):
+      enum_val = enum_item.value
+      if len(enum_val) == 1:
+        if enum_val[0] == value:
+          return enum_item
+      elif enum_val[0] <= value <= enum_val[1]:
+        return enum_item
+
+
+class IntEnum(int, Enum):
+  @classmethod
+  def from_code(cls, value):
+    for enum_item in list(cls):
+      if enum_item.value == value:
+        return enum_item
+
+
+class JobStateCodes(RangedCodeEnum):
+  Starting = (3,)
+  Running = (4,)
+  Suspended = (5,)
+  Shutting_Down = (6,)
+  Completed = (7,)
+  Terminated = (8,)
+  Killed = (9,)
+  Exception = (10,)
+  Service = (11,)
+  DMTF_Reserved = (12, 32767)
+  Vendor_Reserved = (32768, 65535)
+
+
+def wait_for_wmi_job(job_path):
+  job_wmi_path = job_path.replace('\\', '/')
+  job = wmi.WMI(moniker=job_wmi_path)
+
+  while JobStateCodes.from_code(job.JobState) == JobStateCodes.Running:
+    time.sleep(1.)
+    job = wmi.WMI(moniker=job_wmi_path)
+  result_state = JobStateCodes.from_code(job.JobState)
+  if result_state != JobStateCodes.Completed:
+    raise Exception("Job('%s', '%s') finished with state '%s' and Error('%s', '%s', '%s')" % (
+      job.Name, job.Description, result_state, job.ErrorCode, job.ErrorDescription, job.ErrorSummaryDescription))
