@@ -1,26 +1,29 @@
-import pprint
+import logging
 
-from hvapi.wmi_utils import WmiHelper, Node, Path, Property, management_object_traversal, get_wmi_object_properties
+from hvapi.hyperv import HypervHost, VirtualMachine
 
-helper = WmiHelper()
-linux_vm = helper.query_one(
-  'SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND ElementName = "linux"')
-
-port_to_switch_path = (
-  Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
-  Node(Path.RELATED, "Msvm_SyntheticEthernetPortSettingData"),
-  Node(Path.RELATED, "Msvm_EthernetPortAllocationSettingData"),
-  Node(Path.PROPERTY, "HostResource", (Property.ARRAY, helper.get))
-)
-result = management_object_traversal(port_to_switch_path, linux_vm)
-pprint.pprint(result)
-
-subtype_path = (
-  Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
-  Node(Path.PROPERTY, "VirtualsystemSubtype", (Property.SINGLE,))
-)
-sub_type = management_object_traversal(subtype_path, linux_vm)
-
-pprint.pprint(get_wmi_object_properties(result[-1][-1]))
-pprint.pprint(get_wmi_object_properties(result[-2][-1]))
+FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+logging.basicConfig(format=FORMAT, level=logging.DEBUG)
+host = HypervHost()
+res = HypervHost()
+machine = host.machine_by_name("hello")
+print(machine.dynamic_memory)
+machine.dynamic_memory = True
+print(machine.dynamic_memory)
+# machine.start()
+# print(machine.state)
+# machine.stop()
+# print(machine.state)
+# # prev_state = None
+# # while True:
+# #   state = machine.state
+# #   if state != prev_state:
+# #     print(state)
+# #   prev_state = state
+# # pprint.pprint()
+# # res.stop()
+# # print(res)
 pass
+
+if __name__ == "__main__":
+  pass

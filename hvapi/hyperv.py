@@ -2,7 +2,8 @@ import logging
 import time
 from typing import List
 
-from hvapi.wmi_utils import WmiHelper, get_wmi_object_properties, wait_for_wmi_job, IntEnum, RangedCodeEnum
+from hvapi.wmi_utils import WmiHelper, get_wmi_object_properties, wait_for_wmi_job, IntEnum, RangedCodeEnum, Node, Path, \
+  management_object_traversal
 
 
 class WmiObjectWrapper(object):
@@ -15,6 +16,9 @@ class WmiObjectWrapper(object):
     return get_wmi_object_properties(self.wmi_object)
 
   def reload(self):
+    """
+    Reload wmi object. Use to update properties values.
+    """
     self.wmi_object = self.wmi_helper.get(self.wmi_object.path_())
 
   def __eq__(self, other):
@@ -90,8 +94,65 @@ class _ComputerSystemRequestStateChangeCodes(RangedCodeEnum):
   InvalidStateForThisOperation = (32775,)
 
 
+class _VirtualSystemManagementServiceModificationCodes(RangedCodeEnum):
+  """
+  For internal usage only. Msvm_VirtualSystemManagementService.[ModifySystemSettings, ModifyResourceSettings] method
+  call error codes.
+  """
+  CompletedWithNoError = (0,)
+  NotSupported = (1,)
+  Failed = (2,)
+  Timeout = (3,)
+  InvalidParameter = (4,)
+  InvalidState = (5,)
+  IncompatibleParameters = (6,)
+  MethodParametersChecked_TransitionStarted = (4096,)
+  MethodReserved = (4097, 32767)
+  VendorSpecific = (32768, 65535)
+
+
 class VirtualMachine(WmiObjectWrapper):
-  LOG = logging.getLogger("VirtualMachine")
+  LOG = logging.getLogger('%s.%s' % (__module__, __qualname__))
+
+  @property
+  def dynamic_memory(self):
+    memory_settings_path = (
+      Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
+      Node(Path.RELATED, "Msvm_MemorySettingData"),
+    )
+    _, msd = management_object_traversal(memory_settings_path, self.wmi_object)[0]
+    return msd.DynamicMemoryEnabled
+
+  @dynamic_memory.setter
+  def dynamic_memory(self, value: bool):
+    memory_settings_path = (
+      Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
+      Node(Path.RELATED, "Msvm_MemorySettingData"),
+    )
+    management_service = self.wmi_helper.query_one('SELECT * FROM Msvm_VirtualSystemManagementService')
+    vssd, msd = management_object_traversal(memory_settings_path, self.wmi_object)[0]
+    if value:
+      msd.DynamicMemoryEnabled = True
+      vssd.VirtualNumaEnabled = False
+      # save modified resource
+      self._call_object_method(
+        management_service,
+        "ModifySystemSettings",
+        lambda x: _VirtualSystemManagementServiceModificationCodes.from_code(x[1]),
+        _VirtualSystemManagementServiceModificationCodes.CompletedWithNoError,
+        SystemSettings=vssd.GetText_(2)
+      )
+    else:
+      msd.DynamicMemoryEnabled = False
+
+    # save modified resource
+    self._call_object_method(
+      management_service,
+      "ModifyResourceSettings",
+      lambda x: _VirtualSystemManagementServiceModificationCodes.from_code(x[2]),
+      _VirtualSystemManagementServiceModificationCodes.CompletedWithNoError,
+      ResourceSettings=[msd.GetText_(2)]
+    )
 
   @property
   def name(self) -> str:
@@ -179,6 +240,7 @@ class VirtualMachine(WmiObjectWrapper):
     :param timeout: time to wait for state
     :return: ``True`` if given ``state`` reached in ``timeout`` seconds, otherwise ``False``
     """
+
     def _while_condition(start_time=None):
       if timeout:
         return (time.time() - start_time) < timeout
@@ -192,6 +254,15 @@ class VirtualMachine(WmiObjectWrapper):
     return state == self.state
 
   # PRIVATE
+  def _call_object_method(self, obj, method_name, err_code_getter, expected_value, *args, **kwargs):
+    method = getattr(obj, method_name)
+    result = method(*args, **kwargs)
+    result_value = err_code_getter(result)
+    if result_value != expected_value:
+      msg = "%s.%s failed with %s" % (obj.Path_.Class, method_name, result_value)
+      self.LOG.error(msg)
+      raise Exception(msg)
+
   def _request_machine_state(self, desired_state: _ComputerSystemRequestedState):
     job, ret_code = self.wmi_object.RequestStateChange(desired_state.value)
     rscc = _ComputerSystemRequestStateChangeCodes.from_code(ret_code)
@@ -215,33 +286,25 @@ class HypervHost(object):
   def __init__(self):
     self.wmi_helper = WmiHelper()
 
-  @staticmethod
-  def _by_name(item_name, item_collection, item_message):
-    result = []
-    for item in item_collection:
-      if item.name == item_name:
-        result.append(item)
-    if len(result) > 1:
-      raise Exception(
-        "There is too much(%d) %s with name '%s', use switch id instead" % (len(result), item_message, item_name))
-    return result[0]
-
-  @staticmethod
-  def _by_id(item_id, item_collection):
-    for item in item_collection:
-      if item.id == item_id:
-        return item
-
   @property
   def switches(self) -> List[VirtualSwitch]:
     return [VirtualSwitch(wmi_obj, self.wmi_helper) for wmi_obj in
             self.wmi_helper.query("SELECT * FROM Msvm_VirtualEthernetSwitch")]
 
   def switch_by_name(self, name) -> VirtualSwitch:
-    return self._by_name(name, self.switches, "virtual switches")
+    result = self.wmi_helper.query(
+      'SELECT * FROM Msvm_VirtualEthernetSwitch WHERE ElementName = "%s"' % name)
+    if len(result) > 1:
+      raise Exception(
+        "There are too much(%d) virtual switches with name '%s', use id instead" % (len(result), name))
+    if result:
+      return result[0]
 
   def switch_by_id(self, switch_id) -> VirtualSwitch:
-    return self._by_id(switch_id, self.switches)
+    result = self.wmi_helper.query(
+      'SELECT * FROM Msvm_VirtualEthernetSwitch WHERE Name = "%s"' % switch_id)
+    if result:
+      return result[0]
 
   @property
   def machines(self) -> List[VirtualMachine]:
@@ -249,37 +312,16 @@ class HypervHost(object):
             self.wmi_helper.query('SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine"')]
 
   def machine_by_name(self, name) -> VirtualMachine:
-    return self._by_name(name, self.machines, "virtual machines")
+    result = self.wmi_helper.query(
+      'SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND ElementName = "%s"' % name)
+    if len(result) > 1:
+      raise Exception(
+        "There are too much(%d) virtual machines with name '%s', use id instead" % (len(result), name))
+    if result:
+      return VirtualMachine(result[0], self.wmi_helper)
 
   def machine_by_id(self, machine_id) -> VirtualMachine:
-    return self._by_id(machine_id, self.machines)
-
-
-def measure_time(func, *args, **kwargs):
-  start = time.time()
-  try:
-    return func(*args, **kwargs)
-  finally:
-    print("Call took:", time.time() - start)
-
-
-FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
-logging.basicConfig(format=FORMAT, level=logging.DEBUG)
-host = HypervHost()
-res = HypervHost()
-machine = host.machine_by_name("linux")
-
-machine.start()
-print(machine.state)
-machine.stop()
-print(machine.state)
-# prev_state = None
-# while True:
-#   state = machine.state
-#   if state != prev_state:
-#     print(state)
-#   prev_state = state
-# pprint.pprint()
-# res.stop()
-# print(res)
-pass
+    result = self.wmi_helper.query(
+      'SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND Name = "%s"' % machine_id)
+    if result:
+      return VirtualMachine(result[0], self.wmi_helper)
