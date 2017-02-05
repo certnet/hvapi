@@ -115,6 +115,34 @@ class VirtualMachine(WmiObjectWrapper):
   LOG = logging.getLogger('%s.%s' % (__module__, __qualname__))
 
   @property
+  def vcpu(self):
+    processor_settings_path = (
+      Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
+      Node(Path.RELATED, "Msvm_ProcessorSettingData")
+    )
+    vssd, psd = management_object_traversal(processor_settings_path, self.wmi_object)[0]
+    return psd.VirtualQuantity
+
+  @vcpu.setter
+  def vcpu(self, value: int):
+    processor_settings_path = (
+      Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
+      Node(Path.RELATED, "Msvm_ProcessorSettingData")
+    )
+    management_service = self.wmi_helper.query_one('SELECT * FROM Msvm_VirtualSystemManagementService')
+    vssd, psd = management_object_traversal(processor_settings_path, self.wmi_object)[0]
+    psd.VirtualQuantity = value
+
+    # save modified resource
+    self._call_object_method(
+      management_service,
+      "ModifyResourceSettings",
+      lambda x: _VirtualSystemManagementServiceModificationCodes.from_code(x[2]),
+      _VirtualSystemManagementServiceModificationCodes.CompletedWithNoError,
+      ResourceSettings=[psd.GetText_(2)]
+    )
+
+  @property
   def dynamic_memory(self):
     memory_settings_path = (
       Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
@@ -255,6 +283,7 @@ class VirtualMachine(WmiObjectWrapper):
 
   # PRIVATE
   def _call_object_method(self, obj, method_name, err_code_getter, expected_value, *args, **kwargs):
+    # TODO wait for job here
     method = getattr(obj, method_name)
     result = method(*args, **kwargs)
     result_value = err_code_getter(result)
@@ -298,13 +327,13 @@ class HypervHost(object):
       raise Exception(
         "There are too much(%d) virtual switches with name '%s', use id instead" % (len(result), name))
     if result:
-      return result[0]
+      return VirtualSwitch(result[0])
 
   def switch_by_id(self, switch_id) -> VirtualSwitch:
     result = self.wmi_helper.query(
       'SELECT * FROM Msvm_VirtualEthernetSwitch WHERE Name = "%s"' % switch_id)
     if result:
-      return result[0]
+      return VirtualSwitch(result[0])
 
   @property
   def machines(self) -> List[VirtualMachine]:

@@ -7,9 +7,11 @@ logging.basicConfig(format=FORMAT, level=logging.DEBUG)
 host = HypervHost()
 res = HypervHost()
 machine = host.machine_by_name("hello")
-print(machine.dynamic_memory)
-machine.dynamic_memory = True
-print(machine.dynamic_memory)
+print(machine.vcpu)
+machine.vcpu = 4
+print(machine.vcpu)
+# machine.dynamic_memory = True
+# print(machine.dynamic_memory)
 # machine.start()
 # print(machine.state)
 # machine.stop()
