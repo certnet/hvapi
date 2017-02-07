@@ -7,9 +7,15 @@ logging.basicConfig(format=FORMAT, level=logging.DEBUG)
 host = HypervHost()
 res = HypervHost()
 machine = host.machine_by_name("hello")
-print(machine.vcpu)
-machine.vcpu = 6
-print(machine.vcpu)
+Msvm_MemorySettingData = {
+  "Limit": 4096,
+  "Reservation": 1024,
+  "DynamicMemoryEnabled": True
+}
+machine.apply_properties("Msvm_MemorySettingData", Msvm_MemorySettingData)
+# print(machine.vcpu)
+# machine.vcpu = 4
+# print(machine.vcpu)
 # machine.dynamic_memory = True
 # print(machine.dynamic_memory)
 # machine.start()

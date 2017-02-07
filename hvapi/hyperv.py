@@ -1,6 +1,8 @@
 import logging
 import time
-from typing import List
+from typing import List, Dict, Any
+
+import functools
 
 from hvapi.wmi_utils import WmiHelper, get_wmi_object_properties, wait_for_wmi_job, IntEnum, RangedCodeEnum, Node, Path, \
   management_object_traversal
@@ -113,77 +115,97 @@ class _VirtualSystemManagementServiceModificationCodes(RangedCodeEnum):
 
 class VirtualMachine(WmiObjectWrapper):
   LOG = logging.getLogger('%s.%s' % (__module__, __qualname__))
-
-  @property
-  def vcpu(self):
-    processor_settings_path = (
+  PATH_MAP = {
+    "Msvm_ProcessorSettingData": (
       Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
       Node(Path.RELATED, "Msvm_ProcessorSettingData")
-    )
-    vssd, psd = management_object_traversal(processor_settings_path, self.wmi_object)[0]
-    return psd.VirtualQuantity
-
-  @vcpu.setter
-  def vcpu(self, value: int):
-    processor_settings_path = (
+    ),
+    "Msvm_MemorySettingData": (
       Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
-      Node(Path.RELATED, "Msvm_ProcessorSettingData")
+      Node(Path.RELATED, "Msvm_MemorySettingData"),
+    ),
+    "Msvm_VirtualSystemSettingData": (
+      Node(Path.RELATED, "Msvm_VirtualSystemSettingData")
     )
-    management_service = self.wmi_helper.query_one('SELECT * FROM Msvm_VirtualSystemManagementService')
-    vssd, psd = management_object_traversal(processor_settings_path, self.wmi_object)[0]
-    psd.VirtualQuantity = value
+  }
+  RESOURCE_CLASSES = ("Msvm_ProcessorSettingData", "Msvm_MemorySettingData")
+  SYSTEM_CLASSES = ("Msvm_VirtualSystemSettingData",)
 
-    # save modified resource
-    self._call_object_method(
-      management_service,
+  def __init__(self, wmi_object, wmi_helper: WmiHelper):
+    super().__init__(wmi_object, wmi_helper)
+    self.management_service = self.wmi_helper.query_one('SELECT * FROM Msvm_VirtualSystemManagementService')
+    self.modify_resource_settings = functools.partial(
+      self._call_object_method,
+      self.management_service,
       "ModifyResourceSettings",
       lambda x: (x[0], _VirtualSystemManagementServiceModificationCodes.from_code(x[2])),
       _VirtualSystemManagementServiceModificationCodes.CompletedWithNoError,
       _VirtualSystemManagementServiceModificationCodes.MethodParametersChecked_TransitionStarted,
-      ResourceSettings=[psd.GetText_(2)]
     )
-
-  @property
-  def dynamic_memory(self):
-    memory_settings_path = (
-      Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
-      Node(Path.RELATED, "Msvm_MemorySettingData"),
-    )
-    _, msd = management_object_traversal(memory_settings_path, self.wmi_object)[0]
-    return msd.DynamicMemoryEnabled
-
-  @dynamic_memory.setter
-  def dynamic_memory(self, value: bool):
-    memory_settings_path = (
-      Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
-      Node(Path.RELATED, "Msvm_MemorySettingData"),
-    )
-    management_service = self.wmi_helper.query_one('SELECT * FROM Msvm_VirtualSystemManagementService')
-    vssd, msd = management_object_traversal(memory_settings_path, self.wmi_object)[0]
-    if value:
-      msd.DynamicMemoryEnabled = True
-      vssd.VirtualNumaEnabled = False
-      # save modified resource
-      self._call_object_method(
-        management_service,
-        "ModifySystemSettings",
-        lambda x: (x[0], _VirtualSystemManagementServiceModificationCodes.from_code(x[1])),
-        _VirtualSystemManagementServiceModificationCodes.CompletedWithNoError,
-        _VirtualSystemManagementServiceModificationCodes.MethodParametersChecked_TransitionStarted,
-        SystemSettings=vssd.GetText_(2)
-      )
-    else:
-      msd.DynamicMemoryEnabled = False
-
-    # save modified resource
-    self._call_object_method(
-      management_service,
-      "ModifyResourceSettings",
-      lambda x: (x[0], _VirtualSystemManagementServiceModificationCodes.from_code(x[2])),
+    self.modify_system_settings = functools.partial(
+      self._call_object_method,
+      self.management_service,
+      "ModifySystemSettings",
+      lambda x: (x[0], _VirtualSystemManagementServiceModificationCodes.from_code(x[1])),
       _VirtualSystemManagementServiceModificationCodes.CompletedWithNoError,
       _VirtualSystemManagementServiceModificationCodes.MethodParametersChecked_TransitionStarted,
-      ResourceSettings=[msd.GetText_(2)]
     )
+
+  def apply_properties(self, class_name: str, properties: Dict[str, Any]):
+    """
+    Apply ``properties`` for ``class_name`` that associated with virtual machine.
+
+    :param class_name: class name that will be used for modification
+    :param properties: properties to apply
+    """
+    class_instance = management_object_traversal(self.PATH_MAP[class_name], self.wmi_object)[0][-1]
+    for property_name, property_value in properties.items():
+      setattr(class_instance, property_name, property_value)
+    if class_name in self.RESOURCE_CLASSES:
+      self.modify_resource_settings(ResourceSettings=[class_instance.GetText_(2)])
+    if class_name in self.SYSTEM_CLASSES:
+      self.modify_system_settings(SystemSettings=class_instance.GetText_(2))
+
+  def apply_properties_group(self, properties_group: Dict[str, Dict[str, Any]]):
+    """
+    Applies given properties to virtual machine.
+
+    :param properties_group: dict of classes and their properties
+    """
+    for class_name, properties in properties_group.items():
+      self.apply_properties(class_name, properties)
+
+  # @property
+  # def vcpu(self):
+  #   vssd, psd = management_object_traversal(self.PATH_MAP["Msvm_ProcessorSettingData"], self.wmi_object)[0]
+  #   return psd.VirtualQuantity
+  #
+  # @vcpu.setter
+  # def vcpu(self, value: int):
+  #   vssd, psd = management_object_traversal(self.PATH_MAP["Msvm_ProcessorSettingData"], self.wmi_object)[0]
+  #   psd.VirtualQuantity = value
+  #
+  #   # save modified resource
+  #   self.modify_resource_settings(ResourceSettings=[psd.GetText_(2)])
+  #
+  # @property
+  # def dynamic_memory(self):
+  #   _, msd = management_object_traversal(self.PATH_MAP["Msvm_MemorySettingData"], self.wmi_object)[0]
+  #   return msd.DynamicMemoryEnabled
+  #
+  # @dynamic_memory.setter
+  # def dynamic_memory(self, value: bool):
+  #   vssd, msd = management_object_traversal(self.PATH_MAP["Msvm_MemorySettingData"], self.wmi_object)[0]
+  #   if value:
+  #     msd.DynamicMemoryEnabled = True
+  #     vssd.VirtualNumaEnabled = False
+  #     # save modified resource
+  #     self.modify_system_settings(SystemSettings=vssd.GetText_(2))
+  #   else:
+  #     msd.DynamicMemoryEnabled = False
+  #
+  #   # save modified resource
+  #   self.modify_resource_settings(ResourceSettings=[msd.GetText_(2)])
 
   @property
   def name(self) -> str:
@@ -283,6 +305,9 @@ class VirtualMachine(WmiObjectWrapper):
         return True
       time.sleep(0.5)
     return state == self.state
+
+  def connect_to_switch(self, virtual_switch: 'VirtualSwitch'):
+    pass
 
   # PRIVATE
   def _call_object_method(self, obj, method_name, err_code_getter, expected_value, wait_job_value, *args, **kwargs):
