@@ -137,8 +137,9 @@ class VirtualMachine(WmiObjectWrapper):
     self._call_object_method(
       management_service,
       "ModifyResourceSettings",
-      lambda x: _VirtualSystemManagementServiceModificationCodes.from_code(x[2]),
+      lambda x: (x[0], _VirtualSystemManagementServiceModificationCodes.from_code(x[2])),
       _VirtualSystemManagementServiceModificationCodes.CompletedWithNoError,
+      _VirtualSystemManagementServiceModificationCodes.MethodParametersChecked_TransitionStarted,
       ResourceSettings=[psd.GetText_(2)]
     )
 
@@ -166,8 +167,9 @@ class VirtualMachine(WmiObjectWrapper):
       self._call_object_method(
         management_service,
         "ModifySystemSettings",
-        lambda x: _VirtualSystemManagementServiceModificationCodes.from_code(x[1]),
+        lambda x: (x[0], _VirtualSystemManagementServiceModificationCodes.from_code(x[1])),
         _VirtualSystemManagementServiceModificationCodes.CompletedWithNoError,
+        _VirtualSystemManagementServiceModificationCodes.MethodParametersChecked_TransitionStarted,
         SystemSettings=vssd.GetText_(2)
       )
     else:
@@ -177,8 +179,9 @@ class VirtualMachine(WmiObjectWrapper):
     self._call_object_method(
       management_service,
       "ModifyResourceSettings",
-      lambda x: _VirtualSystemManagementServiceModificationCodes.from_code(x[2]),
+      lambda x: (x[0], _VirtualSystemManagementServiceModificationCodes.from_code(x[2])),
       _VirtualSystemManagementServiceModificationCodes.CompletedWithNoError,
+      _VirtualSystemManagementServiceModificationCodes.MethodParametersChecked_TransitionStarted,
       ResourceSettings=[msd.GetText_(2)]
     )
 
@@ -282,15 +285,26 @@ class VirtualMachine(WmiObjectWrapper):
     return state == self.state
 
   # PRIVATE
-  def _call_object_method(self, obj, method_name, err_code_getter, expected_value, *args, **kwargs):
-    # TODO wait for job here
+  def _call_object_method(self, obj, method_name, err_code_getter, expected_value, wait_job_value, *args, **kwargs):
+    """
+    Call wmi object method.
+
+    :param obj: wmi object
+    :param method_name: method name
+    :param err_code_getter: callable that returns ``(job_ref, error_code)``, possibly transformed to some other values
+    :param expected_value: expected success ``error_code``
+    :param wait_job_value: expected job ``error_code``
+    :param args: method args
+    :param kwargs: method key-value args
+    """
     method = getattr(obj, method_name)
-    result = method(*args, **kwargs)
-    result_value = err_code_getter(result)
-    if result_value != expected_value:
+    job, result_value = err_code_getter(method(*args, **kwargs))
+    if result_value not in (expected_value, wait_job_value):
       msg = "%s.%s failed with %s" % (obj.Path_.Class, method_name, result_value)
       self.LOG.error(msg)
       raise Exception(msg)
+    if result_value == wait_job_value:
+      wait_for_wmi_job(job)
 
   def _request_machine_state(self, desired_state: _ComputerSystemRequestedState):
     job, ret_code = self.wmi_object.RequestStateChange(desired_state.value)

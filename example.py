@@ -8,7 +8,7 @@ host = HypervHost()
 res = HypervHost()
 machine = host.machine_by_name("hello")
 print(machine.vcpu)
-machine.vcpu = 4
+machine.vcpu = 6
 print(machine.vcpu)
 # machine.dynamic_memory = True
 # print(machine.dynamic_memory)
