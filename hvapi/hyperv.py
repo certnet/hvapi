@@ -1,11 +1,11 @@
+import functools
 import logging
 import time
+from enum import Enum
 from typing import List, Dict, Any
 
-import functools
-
-from hvapi.wmi_utils import WmiHelper, get_wmi_object_properties, wait_for_wmi_job, IntEnum, RangedCodeEnum, Node, Path, \
-  management_object_traversal
+from hvapi.wmi_utils import WmiHelper, get_wmi_object_properties, wait_for_wmi_job, IntEnum, RangedCodeEnum, Node, \
+  Path, management_object_traversal, Property
 
 
 class WmiObjectWrapper(object):
@@ -55,6 +55,28 @@ class _ComputerSystemEnabledState(IntEnum):
   Quiesce = 9  # paused
   Starting = 10
 
+  def to_virtual_machine_state(self):
+    if self == _ComputerSystemEnabledState.Enabled:
+      return VirtualMachineState.RUNNING
+    elif self == _ComputerSystemEnabledState.Disabled:
+      return VirtualMachineState.STOPPED
+    elif self == _ComputerSystemEnabledState.EnabledButOffline:
+      return VirtualMachineState.SAVED
+    elif self == _ComputerSystemEnabledState.Quiesce:
+      return VirtualMachineState.PAUSED
+    else:
+      return VirtualMachineState.UNDEFINED
+
+
+# TODO map internal state to external and via verse.
+class VirtualMachineState(int, Enum):
+  UNDEFINED = -1
+  RUNNING = 0
+  STOPPED = 1
+  SAVED = 2
+  PAUSED = 3
+  ERROR = 4
+
 
 class _ComputerSystemRequestedState(IntEnum):
   """
@@ -73,6 +95,18 @@ class _ComputerSystemRequestedState(IntEnum):
   Resuming = 32777
   FastSaved = 32779
   FastSaving = 32780
+
+  # @classmethod
+  # def from_virtual_machine_state(cls, vms: 'VirtualMachineState'):
+  #   if vms == VirtualMachineState.Running:
+  #     return cls.Running
+  #   elif vms == VirtualMachineState.STOPPED:
+  #     return cls.Off
+  #   elif vms == VirtualMachineState.SAVED:
+  #     return cls.Saved
+  #   elif vms == VirtualMachineState.PAUSED:
+  #     return cls.Paused
+  #   raise Exception("You doing something wrong, we can not move machine to state '%s'" % vms)
 
 
 class _ShutdownComponentOperationalStatus(IntEnum):
@@ -113,7 +147,42 @@ class _VirtualSystemManagementServiceModificationCodes(RangedCodeEnum):
   VendorSpecific = (32768, 65535)
 
 
+class VirtualMachineNetworkAdapter(WmiObjectWrapper):
+  """
+  Represents machine network adapter. Gives access to adapter network address(mac address), virtual switch(associated
+  with this adapter), static ip injection settings.
+  """
+
+  @property
+  def address(self) -> str:
+    """
+    Returns network adapter mac address.
+    """
+    return self.wmi_object.Address
+
+  @property
+  def switch(self) -> 'VirtualSwitch':
+    """
+    Returns virtual switch that this adapter connected to.
+    """
+    result = []
+    port_to_switch_path = (
+      Node(Path.RELATED, "Msvm_EthernetPortAllocationSettingData"),
+      Node(Path.PROPERTY, "HostResource", (Property.ARRAY, self.wmi_helper.get))
+    )
+    for epas, virtual_switch in management_object_traversal(port_to_switch_path, self.wmi_object):
+      result.append(VirtualSwitch(wmi_object=virtual_switch, wmi_helper=self.wmi_helper))
+    if len(result) > 1:
+      raise Exception("Something horrible happened, virtual network adapter connected to more that one virtual switch")
+    if result:
+      return result[0]
+
+
 class VirtualMachine(WmiObjectWrapper):
+  """
+  Represents virtual machine. Gives access to machine name and id, network adapters, gives ability to start,
+  stop, pause, save, reset machine.
+  """
   LOG = logging.getLogger('%s.%s' % (__module__, __qualname__))
   PATH_MAP = {
     "Msvm_ProcessorSettingData": (
@@ -226,14 +295,23 @@ class VirtualMachine(WmiObjectWrapper):
     return self.wmi_object.Name
 
   @property
-  def state(self) -> _ComputerSystemEnabledState:
+  def state(self, timeout=30) -> VirtualMachineState:
     """
-    Current virtual machine state.
+    Current virtual machine state. It will try to get actual real state(like running, stopped, etc) for ``timeout``
+    seconds before returning ``VirtualMachineState.UNDEFINED``. We need this ``timeout`` because hyper-v likes some
+    middle states, like starting, stopped. Ususally this middle states long not more that 10 seconds and soon will be
+    changed to something that we expecting.
 
+    :param timeout: time to wait for real state
     :return: virtual machine state
     """
     self.reload()
-    return _ComputerSystemEnabledState.from_code(self.wmi_object.EnabledState)
+    _start = time.time()
+    state = _ComputerSystemEnabledState.from_code(self.wmi_object.EnabledState).to_virtual_machine_state()
+    while state == VirtualMachineState.UNDEFINED and time.time() - _start < timeout:
+      state = _ComputerSystemEnabledState.from_code(self.wmi_object.EnabledState).to_virtual_machine_state()
+      time.sleep(1)
+    return state
 
   def start(self, timeout=60):
     """
@@ -308,6 +386,22 @@ class VirtualMachine(WmiObjectWrapper):
 
   def connect_to_switch(self, virtual_switch: 'VirtualSwitch'):
     pass
+
+  @property
+  def network_adapters(self) -> List[VirtualMachineNetworkAdapter]:
+    """
+    Returns list of machines network adapters.
+
+    :return: list of machines network adapters
+    """
+    result = []
+    port_to_switch_path = (
+      Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
+      Node(Path.RELATED, "Msvm_SyntheticEthernetPortSettingData"),
+    )
+    for _, seps in management_object_traversal(port_to_switch_path, self.wmi_object):
+      result.append(VirtualMachineNetworkAdapter(seps, self.wmi_helper))
+    return result
 
   # PRIVATE
   def _call_object_method(self, obj, method_name, err_code_getter, expected_value, wait_job_value, *args, **kwargs):

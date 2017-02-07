@@ -6,13 +6,17 @@ FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 logging.basicConfig(format=FORMAT, level=logging.DEBUG)
 host = HypervHost()
 res = HypervHost()
-machine = host.machine_by_name("hello")
-Msvm_MemorySettingData = {
-  "Limit": 4096,
-  "Reservation": 1024,
-  "DynamicMemoryEnabled": True
-}
-machine.apply_properties("Msvm_MemorySettingData", Msvm_MemorySettingData)
+machine = host.machine_by_name("linux")
+print(host.machine_by_name("linux").state)
+print(host.machine_by_name("hello").state)
+# Msvm_MemorySettingData = {
+#   "Limit": 4096,
+#   "Reservation": 1024,
+#   "DynamicMemoryEnabled": True
+# }
+# machine.apply_properties("Msvm_MemorySettingData", Msvm_MemorySettingData)
+res = machine.network_adapters
+res = machine.network_adapters
 # print(machine.vcpu)
 # machine.vcpu = 4
 # print(machine.vcpu)
