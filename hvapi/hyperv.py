@@ -4,8 +4,20 @@ import time
 from enum import Enum
 from typing import List, Dict, Any
 
-from hvapi.wmi_utils import WmiHelper, get_wmi_object_properties, wait_for_wmi_job, IntEnum, RangedCodeEnum, Node, \
+from hvapi.hv_types_internal import _ComputerSystemEnabledState, _ComputerSystemRequestedState, \
+  _ShutdownComponentOperationalStatus, _ComputerSystemRequestStateChangeCodes, \
+  _VirtualSystemManagementServiceModificationCodes
+from hvapi.wmi_utils import WmiHelper, get_wmi_object_properties, wait_for_wmi_job, Node, \
   Path, management_object_traversal, Property
+
+
+class VirtualMachineState(int, Enum):
+  UNDEFINED = -1
+  RUNNING = 0
+  STOPPED = 1
+  SAVED = 2
+  PAUSED = 3
+  ERROR = 4
 
 
 class WmiObjectWrapper(object):
@@ -37,114 +49,6 @@ class VirtualSwitch(WmiObjectWrapper):
   @property
   def id(self):
     return self.wmi_object.Name
-
-
-class _ComputerSystemEnabledState(IntEnum):
-  """
-  For internal usage only. Represents actual state of Machine. It is Msvm_ComputerSystem.EnabledState property.
-  """
-  Unknown = 0
-  Other = 1
-  Enabled = 2  # running
-  Disabled = 3  # stopped
-  ShuttingDown = 4
-  NotApplicable = 5
-  EnabledButOffline = 6  # saved
-  InTest = 7
-  Deferred = 8
-  Quiesce = 9  # paused
-  Starting = 10
-
-  def to_virtual_machine_state(self):
-    if self == _ComputerSystemEnabledState.Enabled:
-      return VirtualMachineState.RUNNING
-    elif self == _ComputerSystemEnabledState.Disabled:
-      return VirtualMachineState.STOPPED
-    elif self == _ComputerSystemEnabledState.EnabledButOffline:
-      return VirtualMachineState.SAVED
-    elif self == _ComputerSystemEnabledState.Quiesce:
-      return VirtualMachineState.PAUSED
-    else:
-      return VirtualMachineState.UNDEFINED
-
-
-# TODO map internal state to external and via verse.
-class VirtualMachineState(int, Enum):
-  UNDEFINED = -1
-  RUNNING = 0
-  STOPPED = 1
-  SAVED = 2
-  PAUSED = 3
-  ERROR = 4
-
-
-class _ComputerSystemRequestedState(IntEnum):
-  """
-  For internal usage only. Passed to Msvm_ComputerSystem.RequestStateChange method call.
-  """
-  Other = 1
-  Running = 2
-  Off = 3
-  Stopping = 4
-  Saved = 6
-  Paused = 9
-  Starting = 10
-  Reset = 11
-  Saving = 32773
-  Pausing = 32776
-  Resuming = 32777
-  FastSaved = 32779
-  FastSaving = 32780
-
-  # @classmethod
-  # def from_virtual_machine_state(cls, vms: 'VirtualMachineState'):
-  #   if vms == VirtualMachineState.Running:
-  #     return cls.Running
-  #   elif vms == VirtualMachineState.STOPPED:
-  #     return cls.Off
-  #   elif vms == VirtualMachineState.SAVED:
-  #     return cls.Saved
-  #   elif vms == VirtualMachineState.PAUSED:
-  #     return cls.Paused
-  #   raise Exception("You doing something wrong, we can not move machine to state '%s'" % vms)
-
-
-class _ShutdownComponentOperationalStatus(IntEnum):
-  """
-  For internal usage only. Msvm_ShutdownComponent.OperationalStatus property.
-  """
-  OK = 2
-  Degraded = 3
-  NonRecoverableError = 7
-  NoContact = 12
-  LostCommunication = 13
-
-
-class _ComputerSystemRequestStateChangeCodes(RangedCodeEnum):
-  """
-  For internal usage only. Msvm_ComputerSystem.RequestStateChange method call error codes.
-  """
-  CompletedWithNoError = (0,)
-  MethodParametersChecked_TransitionStarted = (4096,)
-  AccessDenied = (32769,)
-  InvalidStateForThisOperation = (32775,)
-
-
-class _VirtualSystemManagementServiceModificationCodes(RangedCodeEnum):
-  """
-  For internal usage only. Msvm_VirtualSystemManagementService.[ModifySystemSettings, ModifyResourceSettings] method
-  call error codes.
-  """
-  CompletedWithNoError = (0,)
-  NotSupported = (1,)
-  Failed = (2,)
-  Timeout = (3,)
-  InvalidParameter = (4,)
-  InvalidState = (5,)
-  IncompatibleParameters = (6,)
-  MethodParametersChecked_TransitionStarted = (4096,)
-  MethodReserved = (4097, 32767)
-  VendorSpecific = (32768, 65535)
 
 
 class VirtualMachineNetworkAdapter(WmiObjectWrapper):
@@ -299,7 +203,7 @@ class VirtualMachine(WmiObjectWrapper):
     """
     Current virtual machine state. It will try to get actual real state(like running, stopped, etc) for ``timeout``
     seconds before returning ``VirtualMachineState.UNDEFINED``. We need this ``timeout`` because hyper-v likes some
-    middle states, like starting, stopped. Ususally this middle states long not more that 10 seconds and soon will be
+    middle states, like starting, stopping, etc. Usually this middle states long not more that 10 seconds and soon will
     changed to something that we expecting.
 
     :param timeout: time to wait for real state
@@ -385,6 +289,7 @@ class VirtualMachine(WmiObjectWrapper):
     return state == self.state
 
   def connect_to_switch(self, virtual_switch: 'VirtualSwitch'):
+    # TODO implement this :)
     pass
 
   @property
