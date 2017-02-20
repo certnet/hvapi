@@ -1,11 +1,10 @@
 import logging
 
-from hvapi.hyperv import HypervHost, VirtualMachine
+from hvapi.hyperv import HypervHost, VirtualMachine, VirtualMachineGeneration
 
 FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 logging.basicConfig(format=FORMAT, level=logging.DEBUG)
 host = HypervHost()
-res = HypervHost()
 machine = host.machine_by_name("linux")
 print(host.machine_by_name("linux").state)
 print(host.machine_by_name("hello").state)
@@ -17,6 +16,12 @@ print(host.machine_by_name("hello").state)
 # machine.apply_properties("Msvm_MemorySettingData", Msvm_MemorySettingData)
 res = machine.network_adapters
 res = machine.network_adapters
+res = host.machine_by_name("test1")
+res = host.machine_by_name("test1")
+res = host.create_machine("test3")
+res = host.machine_by_name("test1")
+pass
+pass
 # print(machine.vcpu)
 # machine.vcpu = 4
 # print(machine.vcpu)

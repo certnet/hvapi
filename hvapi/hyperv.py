@@ -11,6 +11,11 @@ from hvapi.wmi_utils import WmiHelper, get_wmi_object_properties, wait_for_wmi_j
   Path, management_object_traversal, Property
 
 
+class VirtualMachineGeneration(str, Enum):
+  GEN1 = "Microsoft:Hyper-V:SubType:1"
+  GEN2 = "Microsoft:Hyper-V:SubType:2"
+
+
 class VirtualMachineState(int, Enum):
   UNDEFINED = -1
   RUNNING = 0
@@ -308,6 +313,10 @@ class VirtualMachine(WmiObjectWrapper):
       result.append(VirtualMachineNetworkAdapter(seps, self.wmi_helper))
     return result
 
+  # def virtual_system_settings(self):
+  #   for vssd in management_object_traversal((Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),), self.wmi_object):
+  #     return WmiObjectWrapper(vssd, self.wmi_helper)
+
   # PRIVATE
   def _call_object_method(self, obj, method_name, err_code_getter, expected_value, wait_job_value, *args, **kwargs):
     """
@@ -352,6 +361,7 @@ class VirtualMachine(WmiObjectWrapper):
 class HypervHost(object):
   def __init__(self):
     self.wmi_helper = WmiHelper()
+    self.management_service = self.wmi_helper.query_one('SELECT * FROM Msvm_VirtualSystemManagementService')
 
   @property
   def switches(self) -> List[VirtualSwitch]:
@@ -392,3 +402,23 @@ class HypervHost(object):
       'SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND Name = "%s"' % machine_id)
     if result:
       return VirtualMachine(result[0], self.wmi_helper)
+
+  def create_machine(self, name, properties_group: Dict[str, Dict[str, Any]] = None,
+                     machine_generation: VirtualMachineGeneration = VirtualMachineGeneration.GEN1) -> VirtualMachine:
+    if self.machine_by_name(name):
+      raise Exception("Machine with name '%s' already exists" % name)
+
+    vssd = self.wmi_helper.conn.Msvm_VirtualSystemSettingData.new()
+    vssd.ElementName = name
+    vssd.VirtualSystemSubType = machine_generation.value
+    job, _, code = self.management_service.DefineSystem(ResourceSettings=[], ReferenceConfiguration=None,
+                                                        SystemSettings=vssd.GetText_(2))
+    if code == 4096:
+      wait_for_wmi_job(job)
+    elif code != 0:
+      raise Exception("Failed to create machine with name '%s' with code '%s'" % (name, code))
+
+    machine = self.machine_by_name(name)
+    machine.apply_properties_group(properties_group)
+
+    return machine
