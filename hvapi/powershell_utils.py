@@ -58,31 +58,9 @@ def parse_properties(text: str):
   return result
 
 
-# class VirtualDisk(object):
-#   GET_VHD = 'Get-VHD -Path "%s"'
-#
-#   def __init__(self, vhd_file_path):
-#     self.vhd_file_path = vhd_file_path
-#
-#   @property
-#   def properties(self):
-#     out, err, code = exec_powershell(self.GET_VHD % self.vhd_file_path)
-#     return parse_properties(out)
-#
-#   pass
-
-# CMD = """
-# function FileSize2
-# {
-#   dir $args[0] |
-#   where {$_.Length -gt 100000}
-# }
-# FileSize2 C:\\Windows
-# """
-#
-# res = exec_powershell(CMD)
-# print(res[0])
-# print(res[1])
-# print(res[2])
-# vhd = VirtualDisk(r"F:\hyper-v-disks\New Virtual Hard Disk.vhdx")
-# print(vhd.properties)
+def exec_powershell_checked(command: str, expected_code=0) -> str:
+  out, err, code = exec_powershell(command)
+  if code != expected_code:
+    raise Exception("Failed to execute ps:\n%s\nwith code '%s'.\nstdout:\n%s\nstderr:\n%s"
+                    % (command, code, out, err))
+  return out

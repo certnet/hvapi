@@ -7,6 +7,7 @@ from typing import List, Dict, Any
 from hvapi.hv_types_internal import _ComputerSystemEnabledState, _ComputerSystemRequestedState, \
   _ShutdownComponentOperationalStatus, _ComputerSystemRequestStateChangeCodes, \
   _VirtualSystemManagementServiceModificationCodes
+from hvapi.powershell_utils import parse_properties, exec_powershell_checked
 from hvapi.wmi_utils import WmiHelper, get_wmi_object_properties, wait_for_wmi_job, Node, \
   Path, management_object_traversal, Property
 
@@ -23,6 +24,26 @@ class VirtualMachineState(int, Enum):
   SAVED = 2
   PAUSED = 3
   ERROR = 4
+
+
+class VHDDisk(object):
+  INFO = 'Get-VHD -Path "%s"'
+  CLONE = 'New-VHD -Path "{PATH}" -ParentPath "{PARENT}" -Differencing'
+
+  def __init__(self, vhd_file_path):
+    self.vhd_file_path = vhd_file_path
+
+  def clone(self, path) -> 'VHDDisk':
+    out = exec_powershell_checked(self.CLONE.format(
+      PATH=path,
+      PARENT=self.vhd_file_path
+    ))
+    return VHDDisk(path)
+
+  @property
+  def properties(self):
+    out = exec_powershell_checked(self.INFO % self.vhd_file_path)
+    return parse_properties(out)
 
 
 class WmiObjectWrapper(object):
@@ -296,6 +317,11 @@ class VirtualMachine(WmiObjectWrapper):
   def connect_to_switch(self, virtual_switch: 'VirtualSwitch'):
     # TODO implement this :)
     pass
+
+  ADD_VHD_CMD = 'Add-VMHardDiskDrive -VMName "{VM_NAME}" -Path "{VHD_PATH}"'
+
+  def add_vhd_disk(self, vhd_disk: VHDDisk):
+    exec_powershell_checked(self.ADD_VHD_CMD.format(VM_NAME=self.name, VHD_PATH=vhd_disk.vhd_file_path))
 
   @property
   def network_adapters(self) -> List[VirtualMachineNetworkAdapter]:
