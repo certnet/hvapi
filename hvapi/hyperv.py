@@ -448,3 +448,137 @@ class HypervHost(object):
     machine.apply_properties_group(properties_group)
 
     return machine
+
+
+ALL_MACHINES = """foreach ($vm in Get-VM) {
+$vm | Select-Object -Property *
+Write-Host --------------------
+}"""
+MACHINE_BY_ID = """$vms = Get-VM -Id "{ID}"
+foreach ($vm in $vms) {{
+$vm | Select-Object -Property *
+Write-Host --------------------
+}}"""
+MACHINE_BY_NAME = """$vms = Get-VM -Name "{NAME}"
+foreach ($vm in $vms) {{
+$vm | Select-Object -Property *
+Write-Host --------------------
+}}"""
+
+
+class VirtualMachine_(object):
+  LOG = logging.getLogger('%s.%s' % (__module__, __qualname__))
+
+  CONNECT_TO_SWITCH_CMD = 'Add-VMNetworkAdapter -VMName "{VM_NAME}" -SwitchName "{SWITCH_NAME}"'
+  ADD_VHD_CMD = 'Add-VMHardDiskDrive -VMName "{VM_NAME}" -Path "{VHD_PATH}"'
+
+  def __init__(self, machine_id: str, name: str):
+    self.machine_id = machine_id
+    self.machine_name = name
+
+  def apply_properties(self, class_name: str, properties: Dict[str, Any]):
+    pass
+
+  def apply_properties_group(self, properties_group: Dict[str, Dict[str, Any]]):
+    pass
+
+  @property
+  def name(self) -> str:
+    return self.machine_name
+
+  @property
+  def id(self) -> str:
+    return self.machine_id
+
+  @property
+  def state(self, timeout=30) -> VirtualMachineState:
+    pass
+
+  def start(self, timeout=60):
+    pass
+
+  def save(self, timeout=60):
+    pass
+
+  def stop(self, hard=False, timeout=60):
+    pass
+
+  def wait_for_state(self, state: _ComputerSystemEnabledState, timeout=60):
+    pass
+
+  def connect_to_switch(self, virtual_switch: 'VirtualSwitch'):
+    """
+    Connects machine to given ``VirtualSwitch``.
+
+    :param virtual_switch: virtual switch to connect
+    """
+    if not self.is_connected_to_switch(virtual_switch):
+      exec_powershell_checked(self.CONNECT_TO_SWITCH_CMD.format(VM_NAME=self.name, SWITCH_NAME=virtual_switch.name))
+
+  def is_connected_to_switch(self, virtual_switch: 'VirtualSwitch'):
+    """
+    Returns ``True`` if machine is connected to given ``VirtualSwitch``.
+
+    :param virtual_switch: virtual switch to check connection
+    :return: ``True`` if connected, otherwise ``False``
+    """
+    for adapter in self.network_adapters:
+      if adapter.switch == virtual_switch:
+        return True
+    return False
+
+  def add_vhd_disk(self, vhd_disk: VHDDisk):
+    """
+    Adds given ``VHDDisk`` to virtual machine.
+
+    :param vhd_disk: ``VHDDisk`` to add to machine
+    """
+    exec_powershell_checked(self.ADD_VHD_CMD.format(VM_NAME=self.name, VHD_PATH=vhd_disk.vhd_file_path))
+
+  @property
+  def network_adapters(self) -> List[VirtualMachineNetworkAdapter]:
+    pass
+
+
+class HypervHost_(object):
+  @property
+  def switches(self) -> List[VirtualSwitch]:
+    pass
+
+  def switch_by_name(self, name) -> VirtualSwitch:
+    pass
+
+  def switch_by_id(self, switch_id) -> VirtualSwitch:
+    pass
+
+  @property
+  def machines(self) -> List[VirtualMachine_]:
+    return self._common_get_machine(ALL_MACHINES)
+
+  def machines_by_name(self, name) -> List[VirtualMachine_]:
+    return self._common_get_machine(MACHINE_BY_NAME.format(NAME=name))
+
+  def machine_by_id(self, machine_id) -> VirtualMachine_:
+    machines = self._common_get_machine(MACHINE_BY_ID.format(ID=machine_id))
+    if machines:
+      return machines[0]
+
+  def create_machine(self, name, properties_group: Dict[str, Dict[str, Any]] = None,
+                     machine_generation: VirtualMachineGeneration = VirtualMachineGeneration.GEN1) -> VirtualMachine:
+    pass
+
+  @staticmethod
+  def _common_get_machine(cmd):
+    out = exec_powershell_checked(cmd)
+    machine_properties_list = [res.strip() for res in out.split("--------------------") if res.strip()]
+    result = []
+    for machine_properties_str in machine_properties_list:
+      machine_properties = parse_properties(machine_properties_str)
+      result.append(VirtualMachine_(machine_properties['VMId'], machine_properties['VMName']))
+    return result
+
+
+all = HypervHost_().machines
+linux = HypervHost_().machines_by_name("linux")
+test = HypervHost_().machine_by_id("8b1d4f76-dc23-47c4-885a-555fa659454e")
+pass

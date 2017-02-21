@@ -2,6 +2,7 @@ import time
 from enum import Enum
 from typing import Tuple, Callable, Iterable
 
+import pythoncom
 import wmi
 
 
@@ -157,3 +158,17 @@ def wait_for_wmi_job(job_path):
   if result_state != JobStateCodes.Completed:
     raise Exception("Job('%s', '%s') finished with state '%s' and Error('%s', '%s', '%s')" % (
       job.Name, job.Description, result_state, job.ErrorCode, job.ErrorDescription, job.ErrorSummaryDescription))
+
+
+def com_threading(func):
+  """
+  Decorator that must be used to wrap all functions that will be used as thread target and will use wmi interfaces.
+  """
+  def decorated(*args, **kwargs):
+    pythoncom.CoInitialize()
+    try:
+      func(*args, **kwargs)
+    finally:
+      pythoncom.CoUninitialize()
+
+  return decorated
