@@ -27,6 +27,9 @@ class VirtualMachineState(int, Enum):
 
 
 class VHDDisk(object):
+  """
+  Represents a VHD disk.
+  """
   INFO = 'Get-VHD -Path "%s"'
   CLONE = 'New-VHD -Path "{PATH}" -ParentPath "{PARENT}" -Differencing'
 
@@ -34,6 +37,11 @@ class VHDDisk(object):
     self.vhd_file_path = vhd_file_path
 
   def clone(self, path) -> 'VHDDisk':
+    """
+    Creates a differencing clone of VHD disk in ``path``.
+
+    :param path: path to save clone of VHD disk
+    """
     out = exec_powershell_checked(self.CLONE.format(
       PATH=path,
       PARENT=self.vhd_file_path
@@ -41,7 +49,12 @@ class VHDDisk(object):
     return VHDDisk(path)
 
   @property
-  def properties(self):
+  def properties(self) -> Dict[str, str]:
+    """
+    Returns properties of VHD disk.
+
+    :return: dictionary with properties
+    """
     out = exec_powershell_checked(self.INFO % self.vhd_file_path)
     return parse_properties(out)
 
@@ -130,6 +143,9 @@ class VirtualMachine(WmiObjectWrapper):
   RESOURCE_CLASSES = ("Msvm_ProcessorSettingData", "Msvm_MemorySettingData")
   SYSTEM_CLASSES = ("Msvm_VirtualSystemSettingData",)
 
+  CONNECT_TO_SWITCH_CMD = 'Add-VMNetworkAdapter -VMName "{VM_NAME}" -SwitchName "{SWITCH_NAME}"'
+  ADD_VHD_CMD = 'Add-VMHardDiskDrive -VMName "{VM_NAME}" -Path "{VHD_PATH}"'
+
   def __init__(self, wmi_object, wmi_helper: WmiHelper):
     super().__init__(wmi_object, wmi_helper)
     self.management_service = self.wmi_helper.query_one('SELECT * FROM Msvm_VirtualSystemManagementService')
@@ -173,38 +189,6 @@ class VirtualMachine(WmiObjectWrapper):
     """
     for class_name, properties in properties_group.items():
       self.apply_properties(class_name, properties)
-
-  # @property
-  # def vcpu(self):
-  #   vssd, psd = management_object_traversal(self.PATH_MAP["Msvm_ProcessorSettingData"], self.wmi_object)[0]
-  #   return psd.VirtualQuantity
-  #
-  # @vcpu.setter
-  # def vcpu(self, value: int):
-  #   vssd, psd = management_object_traversal(self.PATH_MAP["Msvm_ProcessorSettingData"], self.wmi_object)[0]
-  #   psd.VirtualQuantity = value
-  #
-  #   # save modified resource
-  #   self.modify_resource_settings(ResourceSettings=[psd.GetText_(2)])
-  #
-  # @property
-  # def dynamic_memory(self):
-  #   _, msd = management_object_traversal(self.PATH_MAP["Msvm_MemorySettingData"], self.wmi_object)[0]
-  #   return msd.DynamicMemoryEnabled
-  #
-  # @dynamic_memory.setter
-  # def dynamic_memory(self, value: bool):
-  #   vssd, msd = management_object_traversal(self.PATH_MAP["Msvm_MemorySettingData"], self.wmi_object)[0]
-  #   if value:
-  #     msd.DynamicMemoryEnabled = True
-  #     vssd.VirtualNumaEnabled = False
-  #     # save modified resource
-  #     self.modify_system_settings(SystemSettings=vssd.GetText_(2))
-  #   else:
-  #     msd.DynamicMemoryEnabled = False
-  #
-  #   # save modified resource
-  #   self.modify_resource_settings(ResourceSettings=[msd.GetText_(2)])
 
   @property
   def name(self) -> str:
@@ -315,12 +299,32 @@ class VirtualMachine(WmiObjectWrapper):
     return state == self.state
 
   def connect_to_switch(self, virtual_switch: 'VirtualSwitch'):
-    # TODO implement this :)
-    pass
+    """
+    Connects machine to given ``VirtualSwitch``.
 
-  ADD_VHD_CMD = 'Add-VMHardDiskDrive -VMName "{VM_NAME}" -Path "{VHD_PATH}"'
+    :param virtual_switch: virtual switch to connect
+    """
+    if not self.is_connected_to_switch(virtual_switch):
+      exec_powershell_checked(self.CONNECT_TO_SWITCH_CMD.format(VM_NAME=self.name, SWITCH_NAME=virtual_switch.name))
+
+  def is_connected_to_switch(self, virtual_switch: 'VirtualSwitch'):
+    """
+    Returns ``True`` if machine is connected to given ``VirtualSwitch``.
+
+    :param virtual_switch: virtual switch to check connection
+    :return: ``True`` if connected, otherwise ``False``
+    """
+    for adapter in self.network_adapters:
+      if adapter.switch == virtual_switch:
+        return True
+    return False
 
   def add_vhd_disk(self, vhd_disk: VHDDisk):
+    """
+    Adds given ``VHDDisk`` to virtual machine.
+
+    :param vhd_disk: ``VHDDisk`` to add to machine
+    """
     exec_powershell_checked(self.ADD_VHD_CMD.format(VM_NAME=self.name, VHD_PATH=vhd_disk.vhd_file_path))
 
   @property
@@ -338,10 +342,6 @@ class VirtualMachine(WmiObjectWrapper):
     for _, seps in management_object_traversal(port_to_switch_path, self.wmi_object):
       result.append(VirtualMachineNetworkAdapter(seps, self.wmi_helper))
     return result
-
-  # def virtual_system_settings(self):
-  #   for vssd in management_object_traversal((Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),), self.wmi_object):
-  #     return WmiObjectWrapper(vssd, self.wmi_helper)
 
   # PRIVATE
   def _call_object_method(self, obj, method_name, err_code_getter, expected_value, wait_job_value, *args, **kwargs):
@@ -401,13 +401,13 @@ class HypervHost(object):
       raise Exception(
         "There are too much(%d) virtual switches with name '%s', use id instead" % (len(result), name))
     if result:
-      return VirtualSwitch(result[0])
+      return VirtualSwitch(result[0], self.wmi_helper)
 
   def switch_by_id(self, switch_id) -> VirtualSwitch:
     result = self.wmi_helper.query(
       'SELECT * FROM Msvm_VirtualEthernetSwitch WHERE Name = "%s"' % switch_id)
     if result:
-      return VirtualSwitch(result[0])
+      return VirtualSwitch(result[0], self.wmi_helper)
 
   @property
   def machines(self) -> List[VirtualMachine]:
