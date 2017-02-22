@@ -1,15 +1,60 @@
-import functools
 import logging
 import time
 from enum import Enum
 from typing import List, Dict, Any
 
-from hvapi.hv_types_internal import _ComputerSystemEnabledState, _ComputerSystemRequestedState, \
-  _ShutdownComponentOperationalStatus, _ComputerSystemRequestStateChangeCodes, \
-  _VirtualSystemManagementServiceModificationCodes
-from hvapi.powershell_utils import parse_properties, exec_powershell_checked
-from hvapi.wmi_utils import WmiHelper, get_wmi_object_properties, wait_for_wmi_job, Node, \
-  Path, management_object_traversal, Property
+from hvapi.hv_types_internal import VirtualMachineStateInternal
+from hvapi.powershell_utils import parse_properties, exec_powershell_checked, parse_select_object_output
+
+# ps scripts
+# host scripts
+_HOST_ALL_SWITCHES_CMD = """foreach ($vm in Get-VMSwitch) {
+$vm | Select-Object -Property *
+Write-Host --------------------
+}"""
+_HOST_SWITCH_BY_ID_CMD = """$vms = Get-VMSwitch-Id "{ID}"
+foreach ($vm in $vms) {{
+$vm | Select-Object -Property *
+Write-Host --------------------
+}}"""
+_HOST_SWITCH_BY_NAME_CMD = """$vms = Get-VMSwitch -Name "{NAME}"
+foreach ($vm in $vms) {{
+$vm | Select-Object -Property *
+Write-Host --------------------
+}}"""
+_HOST_ALL_MACHINES_CMD = """foreach ($vm in Get-VM) {
+$vm | Select-Object -Property *
+Write-Host --------------------
+}"""
+_HOST_MACHINE_BY_ID_CMD = """$vms = Get-VM -Id "{ID}"
+foreach ($vm in $vms) {{
+$vm | Select-Object -Property *
+Write-Host --------------------
+}}"""
+_HOST_MACHINE_BY_NAME_CMD = """$vms = Get-VM -Name "{NAME}"
+foreach ($vm in $vms) {{
+$vm | Select-Object -Property *
+Write-Host --------------------
+}}"""
+
+# adapter scripts
+_ADAPTER_GET_CONCRETE_ADAPTER_CMD = """$adapters = Get-VMNetworkAdapter -VM (Get-Vm -Id {VM_ID})
+$adapters | Where-Object -Property Id -eq {ADAPTER_ID} | Select-Object -Property *
+"""
+
+# machine scripts
+_MACHINE_GET_MACHINE_ADAPTERS_CMD = """$adapters = Get-VMNetworkAdapter -VM (Get-Vm -Id "{VM_ID}")
+foreach ($adapter in $adapters) {{
+$adapter | Select-Object -Property *
+Write-Host --------------------
+}}"""
+_MACHINE_CONNECT_TO_SWITCH_CMD = 'Add-VMNetworkAdapter -VMName "{VM_NAME}" -SwitchName "{SWITCH_NAME}"'
+_MACHINE_ADD_VHD_CMD = 'Add-VMHardDiskDrive -VMName "{VM_NAME}" -Path "{VHD_PATH}"'
+_MACHINE_GET_PROPERTY_CMD = '(Get-Vm -Id {ID}).{PROPERTY}'
+_MACHINE_STOP_FORCE_CMD = 'Stop-VM -VM (Get-Vm -Id {ID}) -Force'
+_MACHINE_START_CMD = 'Start-VM -VM (Get-Vm -Id {ID})'
+_MACHINE_SAVE_CMD = 'Save-VM -VM (Get-Vm -Id {ID})'
+_MACHINE_PAUSE_CMD = 'Suspend-VM -VM (Get-Vm -Id {ID})'
 
 
 class VirtualMachineGeneration(str, Enum):
@@ -42,7 +87,7 @@ class VHDDisk(object):
 
     :param path: path to save clone of VHD disk
     """
-    out = exec_powershell_checked(self.CLONE.format(
+    exec_powershell_checked(self.CLONE.format(
       PATH=path,
       PARENT=self.vhd_file_path
     ))
@@ -59,112 +104,54 @@ class VHDDisk(object):
     return parse_properties(out)
 
 
-class WmiObjectWrapper(object):
-  def __init__(self, wmi_object, wmi_helper: WmiHelper):
-    self.wmi_object = wmi_object
-    self.wmi_helper = wmi_helper
+class VirtualSwitch(object):
+  def __init__(self, switch_id, switch_name):
+    self.switch_id = switch_id
+    self.switch_name = switch_name
 
-  @property
-  def properties(self):
-    return get_wmi_object_properties(self.wmi_object)
-
-  def reload(self):
-    """
-    Reload wmi object. Use to update properties values.
-    """
-    self.wmi_object = self.wmi_helper.get(self.wmi_object.path_())
-
-  def __eq__(self, other):
-    if isinstance(other, VirtualSwitch):
-      return self.wmi_object == other.wmi_object
-    return False
-
-
-class VirtualSwitch(WmiObjectWrapper):
   @property
   def name(self):
-    return self.wmi_object.ElementName
+    return self.switch_name
 
   @property
   def id(self):
-    return self.wmi_object.Name
+    return self.switch_id
+
+  def __eq__(self, other):
+    return self.id == other.id and self.name == other.name
 
 
-class VirtualMachineNetworkAdapter(WmiObjectWrapper):
-  """
-  Represents machine network adapter. Gives access to adapter network address(mac address), virtual switch(associated
-  with this adapter), static ip injection settings.
-  """
+class VirtualMachineNetworkAdapter(object):
+  def __init__(self, machine_id, adapter_id):
+    self.machine_id = machine_id
+    self.adapter_id = adapter_id
+
+  @property
+  def properties(self):
+    return parse_properties(
+      exec_powershell_checked(
+        _ADAPTER_GET_CONCRETE_ADAPTER_CMD.format(VM_ID=self.machine_id, ADAPTER_ID=self.adapter_id)))
 
   @property
   def address(self) -> str:
-    """
-    Returns network adapter mac address.
-    """
-    return self.wmi_object.Address
+    return self.properties['MacAddress']
 
   @property
   def switch(self) -> 'VirtualSwitch':
-    """
-    Returns virtual switch that this adapter connected to.
-    """
-    result = []
-    port_to_switch_path = (
-      Node(Path.RELATED, "Msvm_EthernetPortAllocationSettingData"),
-      Node(Path.PROPERTY, "HostResource", (Property.ARRAY, self.wmi_helper.get))
-    )
-    for epas, virtual_switch in management_object_traversal(port_to_switch_path, self.wmi_object):
-      result.append(VirtualSwitch(wmi_object=virtual_switch, wmi_helper=self.wmi_helper))
-    if len(result) > 1:
-      raise Exception("Something horrible happened, virtual network adapter connected to more that one virtual switch")
-    if result:
-      return result[0]
+    props = self.properties
+    return VirtualSwitch(props['SwitchId'], props['SwitchName'])
 
 
-class VirtualMachine(WmiObjectWrapper):
+class VirtualMachine(object):
   """
   Represents virtual machine. Gives access to machine name and id, network adapters, gives ability to start,
   stop, pause, save, reset machine.
   """
   LOG = logging.getLogger('%s.%s' % (__module__, __qualname__))
-  PATH_MAP = {
-    "Msvm_ProcessorSettingData": (
-      Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
-      Node(Path.RELATED, "Msvm_ProcessorSettingData")
-    ),
-    "Msvm_MemorySettingData": (
-      Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
-      Node(Path.RELATED, "Msvm_MemorySettingData"),
-    ),
-    "Msvm_VirtualSystemSettingData": (
-      Node(Path.RELATED, "Msvm_VirtualSystemSettingData")
-    )
-  }
-  RESOURCE_CLASSES = ("Msvm_ProcessorSettingData", "Msvm_MemorySettingData")
-  SYSTEM_CLASSES = ("Msvm_VirtualSystemSettingData",)
 
-  CONNECT_TO_SWITCH_CMD = 'Add-VMNetworkAdapter -VMName "{VM_NAME}" -SwitchName "{SWITCH_NAME}"'
-  ADD_VHD_CMD = 'Add-VMHardDiskDrive -VMName "{VM_NAME}" -Path "{VHD_PATH}"'
-
-  def __init__(self, wmi_object, wmi_helper: WmiHelper):
-    super().__init__(wmi_object, wmi_helper)
-    self.management_service = self.wmi_helper.query_one('SELECT * FROM Msvm_VirtualSystemManagementService')
-    self.modify_resource_settings = functools.partial(
-      self._call_object_method,
-      self.management_service,
-      "ModifyResourceSettings",
-      lambda x: (x[0], _VirtualSystemManagementServiceModificationCodes.from_code(x[2])),
-      _VirtualSystemManagementServiceModificationCodes.CompletedWithNoError,
-      _VirtualSystemManagementServiceModificationCodes.MethodParametersChecked_TransitionStarted,
-    )
-    self.modify_system_settings = functools.partial(
-      self._call_object_method,
-      self.management_service,
-      "ModifySystemSettings",
-      lambda x: (x[0], _VirtualSystemManagementServiceModificationCodes.from_code(x[1])),
-      _VirtualSystemManagementServiceModificationCodes.CompletedWithNoError,
-      _VirtualSystemManagementServiceModificationCodes.MethodParametersChecked_TransitionStarted,
-    )
+  def __init__(self, machine_id: str, name: str):
+    self.machine_id = machine_id
+    self.machine_name = name
 
   def apply_properties(self, class_name: str, properties: Dict[str, Any]):
     """
@@ -173,13 +160,7 @@ class VirtualMachine(WmiObjectWrapper):
     :param class_name: class name that will be used for modification
     :param properties: properties to apply
     """
-    class_instance = management_object_traversal(self.PATH_MAP[class_name], self.wmi_object)[0][-1]
-    for property_name, property_value in properties.items():
-      setattr(class_instance, property_name, property_value)
-    if class_name in self.RESOURCE_CLASSES:
-      self.modify_resource_settings(ResourceSettings=[class_instance.GetText_(2)])
-    if class_name in self.SYSTEM_CLASSES:
-      self.modify_system_settings(SystemSettings=class_instance.GetText_(2))
+    pass
 
   def apply_properties_group(self, properties_group: Dict[str, Dict[str, Any]]):
     """
@@ -187,8 +168,7 @@ class VirtualMachine(WmiObjectWrapper):
 
     :param properties_group: dict of classes and their properties
     """
-    for class_name, properties in properties_group.items():
-      self.apply_properties(class_name, properties)
+    pass
 
   @property
   def name(self) -> str:
@@ -197,7 +177,7 @@ class VirtualMachine(WmiObjectWrapper):
 
     :return: virtual machine name
     """
-    return self.wmi_object.ElementName
+    return self.machine_name
 
   @property
   def id(self) -> str:
@@ -206,7 +186,7 @@ class VirtualMachine(WmiObjectWrapper):
 
     :return: virtual machine identifier
     """
-    return self.wmi_object.Name
+    return self.machine_id
 
   @property
   def state(self, timeout=30) -> VirtualMachineState:
@@ -219,38 +199,22 @@ class VirtualMachine(WmiObjectWrapper):
     :param timeout: time to wait for real state
     :return: virtual machine state
     """
-    self.reload()
     _start = time.time()
-    state = _ComputerSystemEnabledState.from_code(self.wmi_object.EnabledState).to_virtual_machine_state()
+    state = VirtualMachineStateInternal[exec_powershell_checked(
+      _MACHINE_GET_PROPERTY_CMD.format(ID=self.id, PROPERTY='State')).strip()].to_virtual_machine_state()
     while state == VirtualMachineState.UNDEFINED and time.time() - _start < timeout:
-      state = _ComputerSystemEnabledState.from_code(self.wmi_object.EnabledState).to_virtual_machine_state()
+      state = VirtualMachineStateInternal[exec_powershell_checked(
+        _MACHINE_GET_PROPERTY_CMD.format(ID=self.id, PROPERTY='State')).strip()].to_virtual_machine_state()
       time.sleep(1)
     return state
 
-  def start(self, timeout=60):
+  def start(self):
     """
     Try to start virtual machine and wait for started state for ``timeout`` seconds.
 
     :param timeout: time to wait for started state
     """
-    self.LOG.debug("Starting machine '%s'", self.id)
-    self._request_machine_state(_ComputerSystemRequestedState.Running)
-    if not self.wait_for_state(_ComputerSystemEnabledState.Enabled, timeout=timeout):
-      raise Exception("Failed to put machine to '%s' in %s seconds" % (_ComputerSystemEnabledState.Enabled, timeout))
-    self.LOG.debug("Started machine '%s'", self.id)
-
-  def save(self, timeout=60):
-    """
-    Try to save virtual machine state and wait for saved state for ``timeout`` seconds.
-
-    :param timeout: time to wait for saved state
-    """
-    self.LOG.debug("Saving machine '%s'", self.id)
-    self._request_machine_state(_ComputerSystemRequestedState.Saved)
-    if not self.wait_for_state(_ComputerSystemEnabledState.EnabledButOffline, timeout=60):
-      raise Exception(
-        "Failed to put machine to '%s' in %s seconds" % (_ComputerSystemEnabledState.EnabledButOffline, timeout))
-    self.LOG.debug("Saved machine '%s'", self.id)
+    exec_powershell_checked(_MACHINE_START_CMD.format(ID=self.id))
 
   def stop(self, hard=False, timeout=60):
     """
@@ -261,42 +225,22 @@ class VirtualMachine(WmiObjectWrapper):
     :param hard: indicates if we need to perform hard stop
     :param timeout: time to wait for stopped state
     """
-    self.LOG.debug("Stopping machine '%s'", self.id)
-    if not hard:
-      shutdown_component = self._get_shutdown_component()
-      if shutdown_component:
-        result = shutdown_component.InitiateShutdown(True, "hyper-v api shutdown")
-        if result[0] != 0 or (
-                result[0] == 0 and not self.wait_for_state(_ComputerSystemEnabledState.Disabled, timeout=timeout)):
-          self.LOG.debug("Failed to gracefully stop machine '%s', killing it", self.id)
-          self._request_machine_state(_ComputerSystemRequestedState.Off)
+    # TODO implement soft stop
+    if hard:
+      exec_powershell_checked(_MACHINE_STOP_FORCE_CMD.format(ID=self.id))
     else:
-      self._request_machine_state(_ComputerSystemRequestedState.Off)
-    if not self.wait_for_state(_ComputerSystemEnabledState.Disabled, timeout=timeout):
-      raise Exception(
-        "Failed to put machine to '%s' in %s seconds" % (_ComputerSystemEnabledState.EnabledButOffline, timeout))
-    self.LOG.debug("Stopped machine '%s'", self.id)
+      exec_powershell_checked(_MACHINE_STOP_FORCE_CMD.format(ID=self.id))
 
-  def wait_for_state(self, state: _ComputerSystemEnabledState, timeout=60):
+  def save(self):
     """
-    Wait for given ``state`` of machine.
+    Try to save virtual machine state and wait for saved state for ``timeout`` seconds.
 
-    :param state: state to wait for
-    :param timeout: time to wait for state
-    :return: ``True`` if given ``state`` reached in ``timeout`` seconds, otherwise ``False``
+    :param timeout: time to wait for saved state
     """
+    exec_powershell_checked(_MACHINE_SAVE_CMD.format(ID=self.id))
 
-    def _while_condition(start_time=None):
-      if timeout:
-        return (time.time() - start_time) < timeout
-      return True
-
-    _begin = time.time()
-    while _while_condition(_begin):
-      if state == self.state:
-        return True
-      time.sleep(0.5)
-    return state == self.state
+  def pause(self):
+    exec_powershell_checked(_MACHINE_PAUSE_CMD.format(ID=self.id))
 
   def connect_to_switch(self, virtual_switch: 'VirtualSwitch'):
     """
@@ -305,7 +249,8 @@ class VirtualMachine(WmiObjectWrapper):
     :param virtual_switch: virtual switch to connect
     """
     if not self.is_connected_to_switch(virtual_switch):
-      exec_powershell_checked(self.CONNECT_TO_SWITCH_CMD.format(VM_NAME=self.name, SWITCH_NAME=virtual_switch.name))
+      exec_powershell_checked(
+        _MACHINE_CONNECT_TO_SWITCH_CMD.format(VM_NAME=self.name, SWITCH_NAME=virtual_switch.name))
 
   def is_connected_to_switch(self, virtual_switch: 'VirtualSwitch'):
     """
@@ -325,7 +270,7 @@ class VirtualMachine(WmiObjectWrapper):
 
     :param vhd_disk: ``VHDDisk`` to add to machine
     """
-    exec_powershell_checked(self.ADD_VHD_CMD.format(VM_NAME=self.name, VHD_PATH=vhd_disk.vhd_file_path))
+    exec_powershell_checked(_MACHINE_ADD_VHD_CMD.format(VM_NAME=self.name, VHD_PATH=vhd_disk.vhd_file_path))
 
   @property
   def network_adapters(self) -> List[VirtualMachineNetworkAdapter]:
@@ -335,250 +280,48 @@ class VirtualMachine(WmiObjectWrapper):
     :return: list of machines network adapters
     """
     result = []
-    port_to_switch_path = (
-      Node(Path.RELATED, "Msvm_VirtualSystemSettingData"),
-      Node(Path.RELATED, "Msvm_SyntheticEthernetPortSettingData"),
-    )
-    for _, seps in management_object_traversal(port_to_switch_path, self.wmi_object):
-      result.append(VirtualMachineNetworkAdapter(seps, self.wmi_helper))
+    adapter_properties_list = parse_select_object_output(_MACHINE_GET_MACHINE_ADAPTERS_CMD.format(VM_ID=self.id),
+                                                         delimiter="--------------------")
+    for adapter_properties in adapter_properties_list:
+      result.append(VirtualMachineNetworkAdapter(self.id, adapter_properties['Id']))
     return result
-
-  # PRIVATE
-  def _call_object_method(self, obj, method_name, err_code_getter, expected_value, wait_job_value, *args, **kwargs):
-    """
-    Call wmi object method.
-
-    :param obj: wmi object
-    :param method_name: method name
-    :param err_code_getter: callable that returns ``(job_ref, error_code)``, possibly transformed to some other values
-    :param expected_value: expected success ``error_code``
-    :param wait_job_value: expected job ``error_code``
-    :param args: method args
-    :param kwargs: method key-value args
-    """
-    method = getattr(obj, method_name)
-    job, result_value = err_code_getter(method(*args, **kwargs))
-    if result_value not in (expected_value, wait_job_value):
-      msg = "%s.%s failed with %s" % (obj.Path_.Class, method_name, result_value)
-      self.LOG.error(msg)
-      raise Exception(msg)
-    if result_value == wait_job_value:
-      wait_for_wmi_job(job)
-
-  def _request_machine_state(self, desired_state: _ComputerSystemRequestedState):
-    job, ret_code = self.wmi_object.RequestStateChange(desired_state.value)
-    rscc = _ComputerSystemRequestStateChangeCodes.from_code(ret_code)
-    if rscc not in (_ComputerSystemRequestStateChangeCodes.CompletedWithNoError,
-                    _ComputerSystemRequestStateChangeCodes.MethodParametersChecked_TransitionStarted):
-      raise Exception("Failed to change machine state to '%s' with result '%s'" % (desired_state, rscc))
-    if rscc == _ComputerSystemRequestStateChangeCodes.MethodParametersChecked_TransitionStarted:
-      wait_for_wmi_job(job)
-    self.LOG.debug("Requested state '%s' of machine '%s' successfully", desired_state, self.id)
-
-  def _get_shutdown_component(self):
-    shutdown_component = self.wmi_object.associators(wmi_result_class="Msvm_ShutdownComponent")
-    if shutdown_component:
-      shutdown_component = shutdown_component[0]
-      operational_status = _ShutdownComponentOperationalStatus.from_code(shutdown_component.OperationalStatus[0])
-      if operational_status in (_ShutdownComponentOperationalStatus.OK, _ShutdownComponentOperationalStatus.Degraded):
-        return shutdown_component
 
 
 class HypervHost(object):
-  def __init__(self):
-    self.wmi_helper = WmiHelper()
-    self.management_service = self.wmi_helper.query_one('SELECT * FROM Msvm_VirtualSystemManagementService')
-
   @property
   def switches(self) -> List[VirtualSwitch]:
-    return [VirtualSwitch(wmi_obj, self.wmi_helper) for wmi_obj in
-            self.wmi_helper.query("SELECT * FROM Msvm_VirtualEthernetSwitch")]
+    return self._common_get(_HOST_ALL_SWITCHES_CMD, VirtualSwitch, ("Id", "Name"))
 
-  def switch_by_name(self, name) -> VirtualSwitch:
-    result = self.wmi_helper.query(
-      'SELECT * FROM Msvm_VirtualEthernetSwitch WHERE ElementName = "%s"' % name)
-    if len(result) > 1:
-      raise Exception(
-        "There are too much(%d) virtual switches with name '%s', use id instead" % (len(result), name))
-    if result:
-      return VirtualSwitch(result[0], self.wmi_helper)
+  def switches_by_name(self, name) -> VirtualSwitch:
+    return self._common_get(_HOST_SWITCH_BY_NAME_CMD.format(NAME=name), VirtualSwitch, ("Id", "Name"))
 
   def switch_by_id(self, switch_id) -> VirtualSwitch:
-    result = self.wmi_helper.query(
-      'SELECT * FROM Msvm_VirtualEthernetSwitch WHERE Name = "%s"' % switch_id)
-    if result:
-      return VirtualSwitch(result[0], self.wmi_helper)
+    switches = self._common_get(_HOST_SWITCH_BY_ID_CMD.format(ID=switch_id), VirtualSwitch, ("Id", "Name"))
+    if switches:
+      return switches[0]
 
   @property
   def machines(self) -> List[VirtualMachine]:
-    return [VirtualMachine(wmi_obj, self.wmi_helper) for wmi_obj in
-            self.wmi_helper.query('SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine"')]
+    return self._common_get(_HOST_ALL_MACHINES_CMD, VirtualMachine, ("VMId", "VMName"))
 
-  def machine_by_name(self, name) -> VirtualMachine:
-    result = self.wmi_helper.query(
-      'SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND ElementName = "%s"' % name)
-    if len(result) > 1:
-      raise Exception(
-        "There are too much(%d) virtual machines with name '%s', use id instead" % (len(result), name))
-    if result:
-      return VirtualMachine(result[0], self.wmi_helper)
+  def machines_by_name(self, name) -> List[VirtualMachine]:
+    return self._common_get(_HOST_MACHINE_BY_NAME_CMD.format(NAME=name), VirtualMachine, ("VMId", "VMName"))
 
   def machine_by_id(self, machine_id) -> VirtualMachine:
-    result = self.wmi_helper.query(
-      'SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND Name = "%s"' % machine_id)
-    if result:
-      return VirtualMachine(result[0], self.wmi_helper)
-
-  def create_machine(self, name, properties_group: Dict[str, Dict[str, Any]] = None,
-                     machine_generation: VirtualMachineGeneration = VirtualMachineGeneration.GEN1) -> VirtualMachine:
-    if self.machine_by_name(name):
-      raise Exception("Machine with name '%s' already exists" % name)
-
-    vssd = self.wmi_helper.conn.Msvm_VirtualSystemSettingData.new()
-    vssd.ElementName = name
-    vssd.VirtualSystemSubType = machine_generation.value
-    job, _, code = self.management_service.DefineSystem(ResourceSettings=[], ReferenceConfiguration=None,
-                                                        SystemSettings=vssd.GetText_(2))
-    if code == 4096:
-      wait_for_wmi_job(job)
-    elif code != 0:
-      raise Exception("Failed to create machine with name '%s' with code '%s'" % (name, code))
-
-    machine = self.machine_by_name(name)
-    machine.apply_properties_group(properties_group)
-
-    return machine
-
-
-ALL_MACHINES = """foreach ($vm in Get-VM) {
-$vm | Select-Object -Property *
-Write-Host --------------------
-}"""
-MACHINE_BY_ID = """$vms = Get-VM -Id "{ID}"
-foreach ($vm in $vms) {{
-$vm | Select-Object -Property *
-Write-Host --------------------
-}}"""
-MACHINE_BY_NAME = """$vms = Get-VM -Name "{NAME}"
-foreach ($vm in $vms) {{
-$vm | Select-Object -Property *
-Write-Host --------------------
-}}"""
-
-
-class VirtualMachine_(object):
-  LOG = logging.getLogger('%s.%s' % (__module__, __qualname__))
-
-  CONNECT_TO_SWITCH_CMD = 'Add-VMNetworkAdapter -VMName "{VM_NAME}" -SwitchName "{SWITCH_NAME}"'
-  ADD_VHD_CMD = 'Add-VMHardDiskDrive -VMName "{VM_NAME}" -Path "{VHD_PATH}"'
-
-  def __init__(self, machine_id: str, name: str):
-    self.machine_id = machine_id
-    self.machine_name = name
-
-  def apply_properties(self, class_name: str, properties: Dict[str, Any]):
-    pass
-
-  def apply_properties_group(self, properties_group: Dict[str, Dict[str, Any]]):
-    pass
-
-  @property
-  def name(self) -> str:
-    return self.machine_name
-
-  @property
-  def id(self) -> str:
-    return self.machine_id
-
-  @property
-  def state(self, timeout=30) -> VirtualMachineState:
-    pass
-
-  def start(self, timeout=60):
-    pass
-
-  def save(self, timeout=60):
-    pass
-
-  def stop(self, hard=False, timeout=60):
-    pass
-
-  def wait_for_state(self, state: _ComputerSystemEnabledState, timeout=60):
-    pass
-
-  def connect_to_switch(self, virtual_switch: 'VirtualSwitch'):
-    """
-    Connects machine to given ``VirtualSwitch``.
-
-    :param virtual_switch: virtual switch to connect
-    """
-    if not self.is_connected_to_switch(virtual_switch):
-      exec_powershell_checked(self.CONNECT_TO_SWITCH_CMD.format(VM_NAME=self.name, SWITCH_NAME=virtual_switch.name))
-
-  def is_connected_to_switch(self, virtual_switch: 'VirtualSwitch'):
-    """
-    Returns ``True`` if machine is connected to given ``VirtualSwitch``.
-
-    :param virtual_switch: virtual switch to check connection
-    :return: ``True`` if connected, otherwise ``False``
-    """
-    for adapter in self.network_adapters:
-      if adapter.switch == virtual_switch:
-        return True
-    return False
-
-  def add_vhd_disk(self, vhd_disk: VHDDisk):
-    """
-    Adds given ``VHDDisk`` to virtual machine.
-
-    :param vhd_disk: ``VHDDisk`` to add to machine
-    """
-    exec_powershell_checked(self.ADD_VHD_CMD.format(VM_NAME=self.name, VHD_PATH=vhd_disk.vhd_file_path))
-
-  @property
-  def network_adapters(self) -> List[VirtualMachineNetworkAdapter]:
-    pass
-
-
-class HypervHost_(object):
-  @property
-  def switches(self) -> List[VirtualSwitch]:
-    pass
-
-  def switch_by_name(self, name) -> VirtualSwitch:
-    pass
-
-  def switch_by_id(self, switch_id) -> VirtualSwitch:
-    pass
-
-  @property
-  def machines(self) -> List[VirtualMachine_]:
-    return self._common_get_machine(ALL_MACHINES)
-
-  def machines_by_name(self, name) -> List[VirtualMachine_]:
-    return self._common_get_machine(MACHINE_BY_NAME.format(NAME=name))
-
-  def machine_by_id(self, machine_id) -> VirtualMachine_:
-    machines = self._common_get_machine(MACHINE_BY_ID.format(ID=machine_id))
+    machines = self._common_get(_HOST_MACHINE_BY_ID_CMD.format(ID=machine_id), VirtualMachine, ("VMId", "VMName"))
     if machines:
       return machines[0]
 
   def create_machine(self, name, properties_group: Dict[str, Dict[str, Any]] = None,
                      machine_generation: VirtualMachineGeneration = VirtualMachineGeneration.GEN1) -> VirtualMachine:
+    # TODO implement
     pass
 
   @staticmethod
-  def _common_get_machine(cmd):
-    out = exec_powershell_checked(cmd)
-    machine_properties_list = [res.strip() for res in out.split("--------------------") if res.strip()]
+  def _common_get(cmd, cls, properties):
+    machine_properties_list = parse_select_object_output(cmd, delimiter="--------------------")
     result = []
-    for machine_properties_str in machine_properties_list:
-      machine_properties = parse_properties(machine_properties_str)
-      result.append(VirtualMachine_(machine_properties['VMId'], machine_properties['VMName']))
+    for machine_properties in machine_properties_list:
+      props = [machine_properties[prop] for prop in properties]
+      result.append(cls(*props))
     return result
-
-
-all = HypervHost_().machines
-linux = HypervHost_().machines_by_name("linux")
-test = HypervHost_().machine_by_id("8b1d4f76-dc23-47c4-885a-555fa659454e")
-pass

@@ -64,3 +64,20 @@ def exec_powershell_checked(command: str, expected_code=0) -> str:
     raise Exception("Failed to execute ps:\n%s\nwith code '%s'.\nstdout:\n%s\nstderr:\n%s"
                     % (command, code, out, err))
   return out
+
+
+def parse_select_object_output(cmd, delimiter):
+  """
+  Parse output of Select-Object function. Script must delimit different items with ``delimiter``.
+
+  :param cmd: command to execute
+  :param delimiter: items delimiter
+  :return: list of object properties
+  """
+  out = exec_powershell_checked(cmd)
+  machine_properties_list = [res.strip() for res in out.split(delimiter) if res.strip()]
+  result = []
+  for machine_properties_str in machine_properties_list:
+    machine_properties = parse_properties(machine_properties_str)
+    result.append(machine_properties)
+  return result
