@@ -141,6 +141,48 @@ class VirtualMachineNetworkAdapter(object):
     props = self.properties
     return VirtualSwitch(props['SwitchId'], props['SwitchName'])
 
+# TODO implement job waiting and error checking
+Msvm_MemorySettingData_HEADER = """
+$Msvm_VirtualSystemManagementService = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_VirtualSystemManagementService
+$Msvm_ComputerSystem = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_ComputerSystem -Filter "Name='{VM_ID}'"
+$Msvm_VirtualSystemSettingData = ($Msvm_ComputerSystem.GetRelated("Msvm_VirtualSystemSettingData", "Msvm_SettingsDefineState", $null, $null, "SettingData", "ManagedElement", $false, $null) | % {{$_}})
+$TargetObject = $Msvm_VirtualSystemSettingData.getRelated("Msvm_MemorySettingData") | select -first 1
+
+"""
+Msvm_MemorySettingData_FOOTER = """
+$Msvm_VirtualSystemManagementService.ModifyResourceSettings($TargetObject.GetText(2))
+"""
+Msvm_ProcessorSettingData_HEADER = """
+$Msvm_VirtualSystemManagementService = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_VirtualSystemManagementService
+$Msvm_ComputerSystem = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_ComputerSystem -Filter "Name='{VM_ID}'"
+$Msvm_VirtualSystemSettingData = ($Msvm_ComputerSystem.GetRelated("Msvm_VirtualSystemSettingData", "Msvm_SettingsDefineState", $null, $null, "SettingData", "ManagedElement", $false, $null) | % {{$_}})
+$TargetObject = $Msvm_VirtualSystemSettingData.getRelated("Msvm_ProcessorSettingData") | select -first 1
+
+"""
+
+
+def _generate__wmi_properties_setters(properties: dict):
+  def transform_value(val):
+    if isinstance(val, bool):
+      if val:
+        return "$true"
+      else:
+        return "$false"
+    if isinstance(val, str):
+      return '"%s"' % val
+    return val
+
+  result = ""
+  for name, value in properties.items():
+    result += "$TargetObject.%s = %s\n" % (name, transform_value(value))
+  return result
+
+
+CLS_MAP = {
+  "Msvm_MemorySettingData": (Msvm_MemorySettingData_HEADER, Msvm_MemorySettingData_FOOTER),
+  "Msvm_ProcessorSettingData": (Msvm_ProcessorSettingData_HEADER, Msvm_MemorySettingData_FOOTER)
+}
+
 
 class VirtualMachine(object):
   """
@@ -160,6 +202,11 @@ class VirtualMachine(object):
     :param class_name: class name that will be used for modification
     :param properties: properties to apply
     """
+    header, footer = CLS_MAP[class_name]
+    cmd = header.format(VM_ID=self.id)
+    cmd += _generate__wmi_properties_setters(properties)
+    cmd += footer
+    res = exec_powershell_checked(cmd)
     pass
 
   def apply_properties_group(self, properties_group: Dict[str, Dict[str, Any]]):
@@ -168,7 +215,8 @@ class VirtualMachine(object):
 
     :param properties_group: dict of classes and their properties
     """
-    pass
+    for cls, properties in properties_group.items():
+      self.apply_properties(cls, properties)
 
   @property
   def name(self) -> str:
