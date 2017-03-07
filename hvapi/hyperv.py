@@ -81,26 +81,26 @@ class VHDDisk(object):
   def __init__(self, vhd_file_path):
     self.vhd_file_path = vhd_file_path
 
-  def clone(self, path) -> 'VHDDisk':
+  async def clone(self, path) -> 'VHDDisk':
     """
     Creates a differencing clone of VHD disk in ``path``.
 
     :param path: path to save clone of VHD disk
     """
-    exec_powershell_checked(self.CLONE.format(
+    await exec_powershell_checked(self.CLONE.format(
       PATH=path,
       PARENT=self.vhd_file_path
     ))
     return VHDDisk(path)
 
   @property
-  def properties(self) -> Dict[str, str]:
+  async def properties(self) -> Dict[str, str]:
     """
     Returns properties of VHD disk.
 
     :return: dictionary with properties
     """
-    out = exec_powershell_checked(self.INFO % self.vhd_file_path)
+    out = await exec_powershell_checked(self.INFO % self.vhd_file_path)
     return parse_properties(out)
 
 
@@ -127,18 +127,18 @@ class VirtualMachineNetworkAdapter(object):
     self.adapter_id = adapter_id
 
   @property
-  def properties(self):
+  async def properties(self):
     return parse_properties(
-      exec_powershell_checked(
+      await exec_powershell_checked(
         _ADAPTER_GET_CONCRETE_ADAPTER_CMD.format(VM_ID=self.machine_id, ADAPTER_ID=self.adapter_id)))
 
   @property
-  def address(self) -> str:
-    return self.properties['MacAddress']
+  async def address(self) -> str:
+    return (await self.properties)['MacAddress']
 
   @property
-  def switch(self) -> 'VirtualSwitch':
-    props = self.properties
+  async def switch(self) -> 'VirtualSwitch':
+    props = await self.properties
     return VirtualSwitch(props['SwitchId'], props['SwitchName'])
 
 # TODO implement job waiting and error checking
@@ -195,7 +195,7 @@ class VirtualMachine(object):
     self.machine_id = machine_id
     self.machine_name = name
 
-  def apply_properties(self, class_name: str, properties: Dict[str, Any]):
+  async def apply_properties(self, class_name: str, properties: Dict[str, Any]):
     """
     Apply ``properties`` for ``class_name`` that associated with virtual machine.
 
@@ -206,7 +206,7 @@ class VirtualMachine(object):
     cmd = header.format(VM_ID=self.id)
     cmd += _generate__wmi_properties_setters(properties)
     cmd += footer
-    res = exec_powershell_checked(cmd)
+    res = await exec_powershell_checked(cmd)
     pass
 
   def apply_properties_group(self, properties_group: Dict[str, Dict[str, Any]]):
@@ -237,7 +237,7 @@ class VirtualMachine(object):
     return self.machine_id
 
   @property
-  def state(self, timeout=30) -> VirtualMachineState:
+  async def state(self, timeout=30) -> VirtualMachineState:
     """
     Current virtual machine state. It will try to get actual real state(like running, stopped, etc) for ``timeout``
     seconds before returning ``VirtualMachineState.UNDEFINED``. We need this ``timeout`` because hyper-v likes some
@@ -248,23 +248,25 @@ class VirtualMachine(object):
     :return: virtual machine state
     """
     _start = time.time()
-    state = VirtualMachineStateInternal[exec_powershell_checked(
-      _MACHINE_GET_PROPERTY_CMD.format(ID=self.id, PROPERTY='State')).strip()].to_virtual_machine_state()
+    state = VirtualMachineStateInternal[
+      (await exec_powershell_checked(_MACHINE_GET_PROPERTY_CMD.format(ID=self.id, PROPERTY='State'))).strip()
+    ].to_virtual_machine_state()
     while state == VirtualMachineState.UNDEFINED and time.time() - _start < timeout:
-      state = VirtualMachineStateInternal[exec_powershell_checked(
-        _MACHINE_GET_PROPERTY_CMD.format(ID=self.id, PROPERTY='State')).strip()].to_virtual_machine_state()
+      state = VirtualMachineStateInternal[
+        (await exec_powershell_checked(_MACHINE_GET_PROPERTY_CMD.format(ID=self.id, PROPERTY='State'))).strip()
+      ].to_virtual_machine_state()
       time.sleep(1)
     return state
 
-  def start(self):
+  async def start(self):
     """
     Try to start virtual machine and wait for started state for ``timeout`` seconds.
 
     :param timeout: time to wait for started state
     """
-    exec_powershell_checked(_MACHINE_START_CMD.format(ID=self.id))
+    await exec_powershell_checked(_MACHINE_START_CMD.format(ID=self.id))
 
-  def stop(self, hard=False, timeout=60):
+  async def stop(self, hard=False, timeout=60):
     """
     Try to stop virtual machine and wait for stopped state for ``timeout`` seconds. If ``hard`` equals to ``False``
     graceful stop will be performed. This function can wait twice of ``timeout`` value in case ``hard=False``, first
@@ -275,61 +277,64 @@ class VirtualMachine(object):
     """
     # TODO implement soft stop
     if hard:
-      exec_powershell_checked(_MACHINE_STOP_FORCE_CMD.format(ID=self.id))
+      await exec_powershell_checked(_MACHINE_STOP_FORCE_CMD.format(ID=self.id))
     else:
-      exec_powershell_checked(_MACHINE_STOP_FORCE_CMD.format(ID=self.id))
+      await exec_powershell_checked(_MACHINE_STOP_FORCE_CMD.format(ID=self.id))
 
-  def save(self):
+  async def save(self):
     """
     Try to save virtual machine state and wait for saved state for ``timeout`` seconds.
 
     :param timeout: time to wait for saved state
     """
-    exec_powershell_checked(_MACHINE_SAVE_CMD.format(ID=self.id))
+    await exec_powershell_checked(_MACHINE_SAVE_CMD.format(ID=self.id))
 
-  def pause(self):
-    exec_powershell_checked(_MACHINE_PAUSE_CMD.format(ID=self.id))
+  async def pause(self):
+    await exec_powershell_checked(_MACHINE_PAUSE_CMD.format(ID=self.id))
 
-  def connect_to_switch(self, virtual_switch: 'VirtualSwitch'):
+  async def connect_to_switch(self, virtual_switch: 'VirtualSwitch'):
     """
     Connects machine to given ``VirtualSwitch``.
 
     :param virtual_switch: virtual switch to connect
     """
     if not self.is_connected_to_switch(virtual_switch):
-      exec_powershell_checked(
-        _MACHINE_CONNECT_TO_SWITCH_CMD.format(VM_NAME=self.name, SWITCH_NAME=virtual_switch.name))
+      await exec_powershell_checked(
+        _MACHINE_CONNECT_TO_SWITCH_CMD.format(VM_NAME=self.name, SWITCH_NAME=virtual_switch.name)
+      )
 
-  def is_connected_to_switch(self, virtual_switch: 'VirtualSwitch'):
+  async def is_connected_to_switch(self, virtual_switch: 'VirtualSwitch'):
     """
     Returns ``True`` if machine is connected to given ``VirtualSwitch``.
 
     :param virtual_switch: virtual switch to check connection
     :return: ``True`` if connected, otherwise ``False``
     """
-    for adapter in self.network_adapters:
-      if adapter.switch == virtual_switch:
+    for adapter in await self.network_adapters:
+      if await adapter.switch == virtual_switch:
         return True
     return False
 
-  def add_vhd_disk(self, vhd_disk: VHDDisk):
+  async def add_vhd_disk(self, vhd_disk: VHDDisk):
     """
     Adds given ``VHDDisk`` to virtual machine.
 
     :param vhd_disk: ``VHDDisk`` to add to machine
     """
-    exec_powershell_checked(_MACHINE_ADD_VHD_CMD.format(VM_NAME=self.name, VHD_PATH=vhd_disk.vhd_file_path))
+    await exec_powershell_checked(_MACHINE_ADD_VHD_CMD.format(VM_NAME=self.name, VHD_PATH=vhd_disk.vhd_file_path))
 
   @property
-  def network_adapters(self) -> List[VirtualMachineNetworkAdapter]:
+  async def network_adapters(self) -> List[VirtualMachineNetworkAdapter]:
     """
     Returns list of machines network adapters.
 
     :return: list of machines network adapters
     """
     result = []
-    adapter_properties_list = parse_select_object_output(_MACHINE_GET_MACHINE_ADAPTERS_CMD.format(VM_ID=self.id),
-                                                         delimiter="--------------------")
+    adapter_properties_list = await parse_select_object_output(
+      _MACHINE_GET_MACHINE_ADAPTERS_CMD.format(VM_ID=self.id),
+      delimiter="--------------------"
+    )
     for adapter_properties in adapter_properties_list:
       result.append(VirtualMachineNetworkAdapter(self.id, adapter_properties['Id']))
     return result
@@ -337,37 +342,37 @@ class VirtualMachine(object):
 
 class HypervHost(object):
   @property
-  def switches(self) -> List[VirtualSwitch]:
-    return self._common_get(_HOST_ALL_SWITCHES_CMD, VirtualSwitch, ("Id", "Name"))
+  async def switches(self) -> List[VirtualSwitch]:
+    return await self._common_get(_HOST_ALL_SWITCHES_CMD, VirtualSwitch, ("Id", "Name"))
 
-  def switches_by_name(self, name) -> VirtualSwitch:
-    return self._common_get(_HOST_SWITCH_BY_NAME_CMD.format(NAME=name), VirtualSwitch, ("Id", "Name"))
+  async def switches_by_name(self, name) -> VirtualSwitch:
+    return await self._common_get(_HOST_SWITCH_BY_NAME_CMD.format(NAME=name), VirtualSwitch, ("Id", "Name"))
 
-  def switch_by_id(self, switch_id) -> VirtualSwitch:
-    switches = self._common_get(_HOST_SWITCH_BY_ID_CMD.format(ID=switch_id), VirtualSwitch, ("Id", "Name"))
+  async def switch_by_id(self, switch_id) -> VirtualSwitch:
+    switches = await self._common_get(_HOST_SWITCH_BY_ID_CMD.format(ID=switch_id), VirtualSwitch, ("Id", "Name"))
     if switches:
       return switches[0]
 
   @property
-  def machines(self) -> List[VirtualMachine]:
-    return self._common_get(_HOST_ALL_MACHINES_CMD, VirtualMachine, ("VMId", "VMName"))
+  async def machines(self) -> List[VirtualMachine]:
+    return await self._common_get(_HOST_ALL_MACHINES_CMD, VirtualMachine, ("VMId", "VMName"))
 
-  def machines_by_name(self, name) -> List[VirtualMachine]:
-    return self._common_get(_HOST_MACHINE_BY_NAME_CMD.format(NAME=name), VirtualMachine, ("VMId", "VMName"))
+  async def machines_by_name(self, name) -> List[VirtualMachine]:
+    return await self._common_get(_HOST_MACHINE_BY_NAME_CMD.format(NAME=name), VirtualMachine, ("VMId", "VMName"))
 
-  def machine_by_id(self, machine_id) -> VirtualMachine:
-    machines = self._common_get(_HOST_MACHINE_BY_ID_CMD.format(ID=machine_id), VirtualMachine, ("VMId", "VMName"))
+  async def machine_by_id(self, machine_id) -> VirtualMachine:
+    machines = await self._common_get(_HOST_MACHINE_BY_ID_CMD.format(ID=machine_id), VirtualMachine, ("VMId", "VMName"))
     if machines:
       return machines[0]
 
-  def create_machine(self, name, properties_group: Dict[str, Dict[str, Any]] = None,
+  async def create_machine(self, name, properties_group: Dict[str, Dict[str, Any]] = None,
                      machine_generation: VirtualMachineGeneration = VirtualMachineGeneration.GEN1) -> VirtualMachine:
     # TODO implement
     pass
 
   @staticmethod
-  def _common_get(cmd, cls, properties):
-    machine_properties_list = parse_select_object_output(cmd, delimiter="--------------------")
+  async def _common_get(cmd, cls, properties):
+    machine_properties_list = await parse_select_object_output(cmd, delimiter="--------------------")
     result = []
     for machine_properties in machine_properties_list:
       props = [machine_properties[prop] for prop in properties]

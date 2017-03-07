@@ -1,23 +1,24 @@
+import asyncio
 import base64
 import subprocess
 
 
-def exec_powershell_input(input_script):
-  """
-  Executes powershell script in interactive session. Just like you typed it manually. With all of that output, including
-  commands you typed.
+# def exec_powershell_input(input_script):
+#   """
+#   Executes powershell script in interactive session. Just like you typed it manually. With all of that output, including
+#   commands you typed.
+#
+#   :param input_script: script, that will be passed to interactive powershell session.
+#   :return: out, err, exitCode
+#   """
+#   input_script += "\n"
+#   input_script += "exit\n"
+#   process = subprocess.Popen(["powershell.exe"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
+#   _out, _err = process.communicate(input_script.encode())
+#   return _out.decode(), _err.decode(), process.returncode
 
-  :param input_script: script, that will be passed to interactive powershell session.
-  :return: out, err, exitCode
-  """
-  input_script += "\n"
-  input_script += "exit\n"
-  process = subprocess.Popen(["powershell.exe"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE)
-  _out, _err = process.communicate(input_script.encode())
-  return _out.decode(), _err.decode(), process.returncode
 
-
-def exec_powershell(command: str):
+async def exec_powershell(command: str):
   """
   Executes inline command. Will contain only command output.
 
@@ -25,10 +26,11 @@ def exec_powershell(command: str):
   :return: out, err, exitCode
   """
   encoded_command = base64.b64encode(command.encode('UTF-16LE')).decode()
-  process = subprocess.Popen(["powershell.exe", "-WindowStyle", "HIDDEN", "-EncodedCommand", encoded_command],
-                             stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE)
-  _out, _err = process.communicate()
+  process = await asyncio.create_subprocess_exec(
+    "powershell.exe", "-WindowStyle", "HIDDEN", "-EncodedCommand", encoded_command,
+    stdout=asyncio.subprocess.PIPE,
+    stderr=asyncio.subprocess.PIPE)
+  _out, _err = await process.communicate()
   return _out.decode(), _err.decode(), process.returncode
 
 
@@ -58,15 +60,15 @@ def parse_properties(text: str):
   return result
 
 
-def exec_powershell_checked(command: str, expected_code=0) -> str:
-  out, err, code = exec_powershell(command)
+async def exec_powershell_checked(command: str, expected_code=0) -> str:
+  out, err, code = await exec_powershell(command)
   if code != expected_code:
     raise Exception("Failed to execute ps:\n%s\nwith code '%s'.\nstdout:\n%s\nstderr:\n%s"
                     % (command, code, out, err))
   return out
 
 
-def parse_select_object_output(cmd, delimiter):
+async def parse_select_object_output(cmd, delimiter):
   """
   Parse output of Select-Object function. Script must delimit different items with ``delimiter``.
 
@@ -74,7 +76,7 @@ def parse_select_object_output(cmd, delimiter):
   :param delimiter: items delimiter
   :return: list of object properties
   """
-  out = exec_powershell_checked(cmd)
+  out = await exec_powershell_checked(cmd)
   machine_properties_list = [res.strip() for res in out.split(delimiter) if res.strip()]
   result = []
   for machine_properties_str in machine_properties_list:
