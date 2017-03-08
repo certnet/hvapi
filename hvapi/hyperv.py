@@ -5,8 +5,7 @@ from enum import Enum
 from typing import List, Dict, Any
 
 from hvapi.hv_types_internal import VirtualMachineStateInternal
-from hvapi.powershell_utils import parse_properties, exec_powershell_checked, parse_select_object_output, \
-  PowershellException
+from hvapi.powershell_utils import parse_properties, exec_powershell_checked, parse_select_object_output
 
 # region PRIVATE
 # ps scripts
