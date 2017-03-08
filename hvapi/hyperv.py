@@ -1,10 +1,12 @@
+import asyncio
 import logging
 import time
 from enum import Enum
 from typing import List, Dict, Any
 
 from hvapi.hv_types_internal import VirtualMachineStateInternal
-from hvapi.powershell_utils import parse_properties, exec_powershell_checked, parse_select_object_output
+from hvapi.powershell_utils import parse_properties, exec_powershell_checked, parse_select_object_output, \
+  PowershellException
 
 # region PRIVATE
 # ps scripts
@@ -61,11 +63,13 @@ _MACHINE_CONNECT_TO_SWITCH_CMD = 'Add-VMNetworkAdapter -VMName "{VM_NAME}" -Swit
 _MACHINE_ADD_VHD_CMD = 'Add-VMHardDiskDrive -VMName "{VM_NAME}" -Path "{VHD_PATH}"'
 _MACHINE_GET_PROPERTY_CMD = '(Get-Vm -Id {ID}).{PROPERTY}'
 _MACHINE_STOP_FORCE_CMD = 'Stop-VM -VM (Get-Vm -Id {ID}) -Force'
+_MACHINE_STOP_TURNOFF_CMD = 'Stop-VM -VM (Get-Vm -Id {ID}) -TurnOff -Force'
 _MACHINE_START_CMD = 'Start-VM -VM (Get-Vm -Id {ID})'
 _MACHINE_SAVE_CMD = 'Save-VM -VM (Get-Vm -Id {ID})'
 _MACHINE_PAUSE_CMD = 'Suspend-VM -VM (Get-Vm -Id {ID})'
 _MACHINE_ADD_COMPORT_CMD = 'Set-VMComPort -VM (Get-Vm -Id {ID}) -Number {NUMBER} -Path {PATH}'
-
+_MACHINE_KILL_MACHINE = "Stop-Process (Get-WmiObject Win32_Process | ? {{$_.Name -match 'vmwp' -and $_.CommandLine " \
+                        "-match (Get-Vm -Id {ID}).Id.Guid}}).ProcessId -Force"
 # WMI scripts
 _Msvm_MemorySettingData_HEADER = """
 $Msvm_VirtualSystemManagementService = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_VirtualSystemManagementService
@@ -327,31 +331,44 @@ class VirtualMachine(object):
   async def start(self):
     """
     Try to start virtual machine and wait for started state for ``timeout`` seconds.
-
-    :param timeout: time to wait for started state
     """
     await exec_powershell_checked(_MACHINE_START_CMD.format(ID=self.id))
 
-  async def stop(self, hard=False, timeout=60):
+  async def kill(self):
     """
-    Try to stop virtual machine and wait for stopped state for ``timeout`` seconds. If ``hard`` equals to ``False``
-    graceful stop will be performed. This function can wait twice of ``timeout`` value in case ``hard=False``, first
-    time it will wait for graceful stop and second - for hard stop.
+    Hard-kill vm process and bring it to stopped state.
+    """
+    await exec_powershell_checked(_MACHINE_KILL_MACHINE.format(ID=self.id))
+    await asyncio.sleep(1)
+    await exec_powershell_checked(_MACHINE_STOP_TURNOFF_CMD.format(ID=self.id))
 
-    :param hard: indicates if we need to perform hard stop
+  async def stop(self, turnoff=False, timeout=60):
+    """
+    Try to stop virtual machine and wait for stopped state for ``timeout`` seconds.
+
+    :param turnoff: indicates if we need to perform turn off(power off)
     :param timeout: time to wait for stopped state
     """
-    # TODO implement soft stop
-    if hard:
-      await exec_powershell_checked(_MACHINE_STOP_FORCE_CMD.format(ID=self.id))
+    if turnoff:
+      try:
+        self.LOG.debug("Turning off machine '%s'", self.id)
+        await asyncio.wait_for(exec_powershell_checked(_MACHINE_STOP_TURNOFF_CMD.format(ID=self.id)), timeout=timeout)
+      except asyncio.futures.TimeoutError:
+        self.LOG.debug("Unable to turn off machine '%s' gracefully, hard-killing...", self.id)
+        await self.kill()
     else:
-      await exec_powershell_checked(_MACHINE_STOP_FORCE_CMD.format(ID=self.id))
+      try:
+        self.LOG.debug("Gracefully stopping machine '%s'", self.id)
+        await asyncio.wait_for(exec_powershell_checked(_MACHINE_STOP_FORCE_CMD.format(ID=self.id)), timeout=timeout)
+      except asyncio.futures.TimeoutError:
+        self.LOG.debug("Unable to gracefully stop machine '%s' gracefully, hard-killing...", self.id)
+        await self.kill()
+
+    self.LOG.debug("Machine '%s' stopped", self.id)
 
   async def save(self):
     """
     Try to save virtual machine state and wait for saved state for ``timeout`` seconds.
-
-    :param timeout: time to wait for saved state
     """
     await exec_powershell_checked(_MACHINE_SAVE_CMD.format(ID=self.id))
 
