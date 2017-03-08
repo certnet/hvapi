@@ -8,18 +8,18 @@ from hvapi.powershell_utils import parse_properties, exec_powershell_checked, pa
 
 # ps scripts
 # host scripts
-_HOST_ALL_SWITCHES_CMD = """foreach ($vm in Get-VMSwitch) {
-$vm | Select-Object -Property *
+_HOST_ALL_SWITCHES_CMD = """foreach ($switch in Get-VMSwitch) {
+$switch | Select-Object -Property *
 Write-Host --------------------
 }"""
-_HOST_SWITCH_BY_ID_CMD = """$vms = Get-VMSwitch-Id "{ID}"
-foreach ($vm in $vms) {{
-$vm | Select-Object -Property *
+_HOST_SWITCH_BY_ID_CMD = """$switches = Get-VMSwitch -Id "{ID}"
+foreach ($switch in $switches) {{
+$switch | Select-Object -Property *
 Write-Host --------------------
 }}"""
-_HOST_SWITCH_BY_NAME_CMD = """$vms = Get-VMSwitch -Name "{NAME}"
-foreach ($vm in $vms) {{
-$vm | Select-Object -Property *
+_HOST_SWITCH_BY_NAME_CMD = """$switches = Get-VMSwitch -Name "{NAME}"
+foreach ($switch in $switches) {{
+$switch | Select-Object -Property *
 Write-Host --------------------
 }}"""
 _HOST_ALL_MACHINES_CMD = """foreach ($vm in Get-VM) {
@@ -41,11 +41,19 @@ Write-Host --------------------
 _ADAPTER_GET_CONCRETE_ADAPTER_CMD = """$adapters = Get-VMNetworkAdapter -VM (Get-Vm -Id {VM_ID})
 $adapters | Where-Object -Property Id -eq {ADAPTER_ID} | Select-Object -Property *
 """
-
+# comport scripts
+_ADAPTER_GET_CONCRETE_COMPORT_CMD = """$comports = Get-VMComPort -VM (Get-Vm -Id {VM_ID})
+$comports | Where-Object -Property Id -eq {COMPORT_ID} | Select-Object -Property *
+"""
 # machine scripts
 _MACHINE_GET_MACHINE_ADAPTERS_CMD = """$adapters = Get-VMNetworkAdapter -VM (Get-Vm -Id "{VM_ID}")
 foreach ($adapter in $adapters) {{
 $adapter | Select-Object -Property *
+Write-Host --------------------
+}}"""
+_MACHINE_GET_MACHINE_COMPORTS_CMD = """$comports = Get-VMComPort -VM (Get-Vm -Id "{VM_ID}")
+foreach ($comport in $comports) {{
+$comport | Select-Object -Property *
 Write-Host --------------------
 }}"""
 _MACHINE_CONNECT_TO_SWITCH_CMD = 'Add-VMNetworkAdapter -VMName "{VM_NAME}" -SwitchName "{SWITCH_NAME}"'
@@ -55,6 +63,7 @@ _MACHINE_STOP_FORCE_CMD = 'Stop-VM -VM (Get-Vm -Id {ID}) -Force'
 _MACHINE_START_CMD = 'Start-VM -VM (Get-Vm -Id {ID})'
 _MACHINE_SAVE_CMD = 'Save-VM -VM (Get-Vm -Id {ID})'
 _MACHINE_PAUSE_CMD = 'Suspend-VM -VM (Get-Vm -Id {ID})'
+_MACHINE_ADD_COMPORT_CMD = 'Set-VMComPort -VM (Get-Vm -Id {ID}) -Number {NUMBER} -Path {PATH}'
 
 
 class VirtualMachineGeneration(str, Enum):
@@ -141,7 +150,28 @@ class VirtualMachineNetworkAdapter(object):
     props = await self.properties
     return VirtualSwitch(props['SwitchId'], props['SwitchName'])
 
-# TODO implement job waiting and error checking
+
+class VirtualMachineComPort(object):
+  def __init__(self, machine_id, comport_id):
+    self.machine_id = machine_id
+    self.comport_id = comport_id
+
+  @property
+  async def properties(self):
+    return parse_properties(
+      await exec_powershell_checked(
+        _ADAPTER_GET_CONCRETE_COMPORT_CMD.format(VM_ID=self.machine_id, COMPORT_ID=self.comport_id)))
+
+  @property
+  async def name(self) -> str:
+    props = await self.properties
+    return props['Name']
+
+  @property
+  async def path(self) -> str:
+    return (await self.properties)['Path']
+
+
 Msvm_MemorySettingData_HEADER = """
 $Msvm_VirtualSystemManagementService = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_VirtualSystemManagementService
 $Msvm_ComputerSystem = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_ComputerSystem -Filter "Name='{VM_ID}'"
@@ -149,8 +179,8 @@ $Msvm_VirtualSystemSettingData = ($Msvm_ComputerSystem.GetRelated("Msvm_VirtualS
 $TargetObject = $Msvm_VirtualSystemSettingData.getRelated("Msvm_MemorySettingData") | select -first 1
 
 """
-Msvm_MemorySettingData_FOOTER = """
-$Msvm_VirtualSystemManagementService.ModifyResourceSettings($TargetObject.GetText(2))
+COMMON_FOOTER = """
+$result = $Msvm_VirtualSystemManagementService.ModifyResourceSettings($TargetObject.GetText(2))
 """
 Msvm_ProcessorSettingData_HEADER = """
 $Msvm_VirtualSystemManagementService = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_VirtualSystemManagementService
@@ -159,9 +189,39 @@ $Msvm_VirtualSystemSettingData = ($Msvm_ComputerSystem.GetRelated("Msvm_VirtualS
 $TargetObject = $Msvm_VirtualSystemSettingData.getRelated("Msvm_ProcessorSettingData") | select -first 1
 
 """
+Msvm_VirtualSystemSettingData_HEADER = """
+$Msvm_VirtualSystemManagementService = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_VirtualSystemManagementService
+$Msvm_ComputerSystem = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_ComputerSystem -Filter "Name='{VM_ID}'"
+$TargetObject = ($Msvm_ComputerSystem.GetRelated("Msvm_VirtualSystemSettingData", "Msvm_SettingsDefineState", $null, $null, "SettingData", "ManagedElement", $false, $null) | % {{$_}})
+
+"""
+Msvm_VirtualSystemSettingData_FOOTER = """
+$result = $Msvm_VirtualSystemManagementService.ModifySystemSettings($TargetObject.GetText(2))
+"""
+
+JOB_HANDLE_FOOTER = """
+if($result.ReturnValue -eq 0){
+  $host.SetShouldExit(0)
+} ElseIf ($result.ReturnValue -ne 4096) {
+  Write-Host "Operation failed:" $result
+  $host.SetShouldExit(1)
+} Else {
+  $job=[WMI]$result.Job
+  while ($job.JobState -eq 3 -or $job.JobState -eq 4) {
+    start-sleep 1
+  }
+  if ($job.JobState -eq 7) {
+    $host.SetShouldExit(0)
+  } Else {
+    Write-Host "ERRORCODE:" $job.ErrorCode
+    Write-Host "ERRORMESSAGE:" $job.ErrorDescription
+    $host.SetShouldExit(1)
+  }
+}
+"""
 
 
-def _generate__wmi_properties_setters(properties: dict):
+def _generate_wmi_properties_setters(properties: dict):
   def transform_value(val):
     if isinstance(val, bool):
       if val:
@@ -179,8 +239,12 @@ def _generate__wmi_properties_setters(properties: dict):
 
 
 CLS_MAP = {
-  "Msvm_MemorySettingData": (Msvm_MemorySettingData_HEADER, Msvm_MemorySettingData_FOOTER),
-  "Msvm_ProcessorSettingData": (Msvm_ProcessorSettingData_HEADER, Msvm_MemorySettingData_FOOTER)
+  "Msvm_MemorySettingData": (Msvm_MemorySettingData_HEADER, COMMON_FOOTER),
+  "Msvm_ProcessorSettingData": (Msvm_ProcessorSettingData_HEADER, COMMON_FOOTER),
+  "Msvm_VirtualSystemSettingData": (Msvm_VirtualSystemSettingData_HEADER, Msvm_VirtualSystemSettingData_FOOTER)
+}
+CLS_MAP_PRIORITY = {
+  "Msvm_VirtualSystemSettingData": 0
 }
 
 
@@ -204,19 +268,18 @@ class VirtualMachine(object):
     """
     header, footer = CLS_MAP[class_name]
     cmd = header.format(VM_ID=self.id)
-    cmd += _generate__wmi_properties_setters(properties)
-    cmd += footer
-    res = await exec_powershell_checked(cmd)
-    pass
+    cmd += _generate_wmi_properties_setters(properties)
+    cmd += footer + JOB_HANDLE_FOOTER
+    await exec_powershell_checked(cmd)
 
-  def apply_properties_group(self, properties_group: Dict[str, Dict[str, Any]]):
+  async def apply_properties_group(self, properties_group: Dict[str, Dict[str, Any]]):
     """
     Applies given properties to virtual machine.
 
     :param properties_group: dict of classes and their properties
     """
-    for cls, properties in properties_group.items():
-      self.apply_properties(cls, properties)
+    for cls, properties in sorted(properties_group.items(), key=lambda itm: CLS_MAP_PRIORITY.get(itm[0], 100)):
+      await self.apply_properties(cls, properties)
 
   @property
   def name(self) -> str:
@@ -339,6 +402,20 @@ class VirtualMachine(object):
       result.append(VirtualMachineNetworkAdapter(self.id, adapter_properties['Id']))
     return result
 
+  @property
+  async def com_ports(self) -> List[VirtualMachineComPort]:
+    result = []
+    comports_properties_list = await parse_select_object_output(
+      _MACHINE_GET_MACHINE_COMPORTS_CMD.format(VM_ID=self.id),
+      delimiter="--------------------"
+    )
+    for comport_properties in comports_properties_list:
+      result.append(VirtualMachineComPort(self.id, comport_properties['Id']))
+    return result
+
+  async def add_com_port(self, number, path):
+    await exec_powershell_checked(_MACHINE_ADD_COMPORT_CMD.format(ID=self.id, NUMBER=number, PATH=path))
+
 
 class HypervHost(object):
   @property
@@ -366,7 +443,7 @@ class HypervHost(object):
       return machines[0]
 
   async def create_machine(self, name, properties_group: Dict[str, Dict[str, Any]] = None,
-                     machine_generation: VirtualMachineGeneration = VirtualMachineGeneration.GEN1) -> VirtualMachine:
+                           machine_generation: VirtualMachineGeneration = VirtualMachineGeneration.GEN1) -> VirtualMachine:
     # TODO implement
     pass
 
