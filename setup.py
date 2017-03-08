@@ -10,7 +10,7 @@ setup(
   description='Hyper-V python library.',
   author='Eugene Chekanskiy',
   author_email='echekanskiy@gmail.com',
-  license='AS IS',
+  license='MIT',
   packages=find_packages(),
   include_package_data=True
 )
