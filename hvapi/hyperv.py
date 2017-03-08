@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 from hvapi.hv_types_internal import VirtualMachineStateInternal
 from hvapi.powershell_utils import parse_properties, exec_powershell_checked, parse_select_object_output
 
+# region PRIVATE
 # ps scripts
 # host scripts
 _HOST_ALL_SWITCHES_CMD = """foreach ($switch in Get-VMSwitch) {
@@ -65,6 +66,84 @@ _MACHINE_SAVE_CMD = 'Save-VM -VM (Get-Vm -Id {ID})'
 _MACHINE_PAUSE_CMD = 'Suspend-VM -VM (Get-Vm -Id {ID})'
 _MACHINE_ADD_COMPORT_CMD = 'Set-VMComPort -VM (Get-Vm -Id {ID}) -Number {NUMBER} -Path {PATH}'
 
+# WMI scripts
+_Msvm_MemorySettingData_HEADER = """
+$Msvm_VirtualSystemManagementService = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_VirtualSystemManagementService
+$Msvm_ComputerSystem = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_ComputerSystem -Filter "Name='{VM_ID}'"
+$Msvm_VirtualSystemSettingData = ($Msvm_ComputerSystem.GetRelated("Msvm_VirtualSystemSettingData", "Msvm_SettingsDefineState", $null, $null, "SettingData", "ManagedElement", $false, $null) | % {{$_}})
+$TargetObject = $Msvm_VirtualSystemSettingData.getRelated("Msvm_MemorySettingData") | select -first 1
+
+"""
+_COMMON_FOOTER = """
+$result = $Msvm_VirtualSystemManagementService.ModifyResourceSettings($TargetObject.GetText(2))
+"""
+_Msvm_ProcessorSettingData_HEADER = """
+$Msvm_VirtualSystemManagementService = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_VirtualSystemManagementService
+$Msvm_ComputerSystem = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_ComputerSystem -Filter "Name='{VM_ID}'"
+$Msvm_VirtualSystemSettingData = ($Msvm_ComputerSystem.GetRelated("Msvm_VirtualSystemSettingData", "Msvm_SettingsDefineState", $null, $null, "SettingData", "ManagedElement", $false, $null) | % {{$_}})
+$TargetObject = $Msvm_VirtualSystemSettingData.getRelated("Msvm_ProcessorSettingData") | select -first 1
+
+"""
+_Msvm_VirtualSystemSettingData_HEADER = """
+$Msvm_VirtualSystemManagementService = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_VirtualSystemManagementService
+$Msvm_ComputerSystem = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_ComputerSystem -Filter "Name='{VM_ID}'"
+$TargetObject = ($Msvm_ComputerSystem.GetRelated("Msvm_VirtualSystemSettingData", "Msvm_SettingsDefineState", $null, $null, "SettingData", "ManagedElement", $false, $null) | % {{$_}})
+
+"""
+_Msvm_VirtualSystemSettingData_FOOTER = """
+$result = $Msvm_VirtualSystemManagementService.ModifySystemSettings($TargetObject.GetText(2))
+"""
+
+_JOB_HANDLER_FOOTER = """
+if($result.ReturnValue -eq 0){
+  $host.SetShouldExit(0)
+} ElseIf ($result.ReturnValue -ne 4096) {
+  Write-Host "Operation failed:" $result
+  $host.SetShouldExit(1)
+} Else {
+  $job=[WMI]$result.Job
+  while ($job.JobState -eq 3 -or $job.JobState -eq 4) {
+    start-sleep 1
+  }
+  if ($job.JobState -eq 7) {
+    $host.SetShouldExit(0)
+  } Else {
+    Write-Host "ERRORCODE:" $job.ErrorCode
+    Write-Host "ERRORMESSAGE:" $job.ErrorDescription
+    $host.SetShouldExit(1)
+  }
+}
+"""
+
+
+def _generate_wmi_properties_setters(properties: dict):
+  def transform_value(val):
+    if isinstance(val, bool):
+      if val:
+        return "$true"
+      else:
+        return "$false"
+    if isinstance(val, str):
+      return '"%s"' % val
+    return val
+
+  result = ""
+  for name, value in properties.items():
+    result += "$TargetObject.%s = %s\n" % (name, transform_value(value))
+  return result
+
+
+_CLS_MAP = {
+  "Msvm_MemorySettingData": (_Msvm_MemorySettingData_HEADER, _COMMON_FOOTER),
+  "Msvm_ProcessorSettingData": (_Msvm_ProcessorSettingData_HEADER, _COMMON_FOOTER),
+  "Msvm_VirtualSystemSettingData": (_Msvm_VirtualSystemSettingData_HEADER, _Msvm_VirtualSystemSettingData_FOOTER)
+}
+_CLS_MAP_PRIORITY = {
+  "Msvm_VirtualSystemSettingData": 0
+}
+
+
+# endregion
 
 class VirtualMachineGeneration(str, Enum):
   GEN1 = "Microsoft:Hyper-V:SubType:1"
@@ -172,82 +251,6 @@ class VirtualMachineComPort(object):
     return (await self.properties)['Path']
 
 
-Msvm_MemorySettingData_HEADER = """
-$Msvm_VirtualSystemManagementService = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_VirtualSystemManagementService
-$Msvm_ComputerSystem = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_ComputerSystem -Filter "Name='{VM_ID}'"
-$Msvm_VirtualSystemSettingData = ($Msvm_ComputerSystem.GetRelated("Msvm_VirtualSystemSettingData", "Msvm_SettingsDefineState", $null, $null, "SettingData", "ManagedElement", $false, $null) | % {{$_}})
-$TargetObject = $Msvm_VirtualSystemSettingData.getRelated("Msvm_MemorySettingData") | select -first 1
-
-"""
-COMMON_FOOTER = """
-$result = $Msvm_VirtualSystemManagementService.ModifyResourceSettings($TargetObject.GetText(2))
-"""
-Msvm_ProcessorSettingData_HEADER = """
-$Msvm_VirtualSystemManagementService = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_VirtualSystemManagementService
-$Msvm_ComputerSystem = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_ComputerSystem -Filter "Name='{VM_ID}'"
-$Msvm_VirtualSystemSettingData = ($Msvm_ComputerSystem.GetRelated("Msvm_VirtualSystemSettingData", "Msvm_SettingsDefineState", $null, $null, "SettingData", "ManagedElement", $false, $null) | % {{$_}})
-$TargetObject = $Msvm_VirtualSystemSettingData.getRelated("Msvm_ProcessorSettingData") | select -first 1
-
-"""
-Msvm_VirtualSystemSettingData_HEADER = """
-$Msvm_VirtualSystemManagementService = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_VirtualSystemManagementService
-$Msvm_ComputerSystem = Get-WmiObject -Namespace root\\virtualization\\v2 -Class Msvm_ComputerSystem -Filter "Name='{VM_ID}'"
-$TargetObject = ($Msvm_ComputerSystem.GetRelated("Msvm_VirtualSystemSettingData", "Msvm_SettingsDefineState", $null, $null, "SettingData", "ManagedElement", $false, $null) | % {{$_}})
-
-"""
-Msvm_VirtualSystemSettingData_FOOTER = """
-$result = $Msvm_VirtualSystemManagementService.ModifySystemSettings($TargetObject.GetText(2))
-"""
-
-JOB_HANDLE_FOOTER = """
-if($result.ReturnValue -eq 0){
-  $host.SetShouldExit(0)
-} ElseIf ($result.ReturnValue -ne 4096) {
-  Write-Host "Operation failed:" $result
-  $host.SetShouldExit(1)
-} Else {
-  $job=[WMI]$result.Job
-  while ($job.JobState -eq 3 -or $job.JobState -eq 4) {
-    start-sleep 1
-  }
-  if ($job.JobState -eq 7) {
-    $host.SetShouldExit(0)
-  } Else {
-    Write-Host "ERRORCODE:" $job.ErrorCode
-    Write-Host "ERRORMESSAGE:" $job.ErrorDescription
-    $host.SetShouldExit(1)
-  }
-}
-"""
-
-
-def _generate_wmi_properties_setters(properties: dict):
-  def transform_value(val):
-    if isinstance(val, bool):
-      if val:
-        return "$true"
-      else:
-        return "$false"
-    if isinstance(val, str):
-      return '"%s"' % val
-    return val
-
-  result = ""
-  for name, value in properties.items():
-    result += "$TargetObject.%s = %s\n" % (name, transform_value(value))
-  return result
-
-
-CLS_MAP = {
-  "Msvm_MemorySettingData": (Msvm_MemorySettingData_HEADER, COMMON_FOOTER),
-  "Msvm_ProcessorSettingData": (Msvm_ProcessorSettingData_HEADER, COMMON_FOOTER),
-  "Msvm_VirtualSystemSettingData": (Msvm_VirtualSystemSettingData_HEADER, Msvm_VirtualSystemSettingData_FOOTER)
-}
-CLS_MAP_PRIORITY = {
-  "Msvm_VirtualSystemSettingData": 0
-}
-
-
 class VirtualMachine(object):
   """
   Represents virtual machine. Gives access to machine name and id, network adapters, gives ability to start,
@@ -266,10 +269,10 @@ class VirtualMachine(object):
     :param class_name: class name that will be used for modification
     :param properties: properties to apply
     """
-    header, footer = CLS_MAP[class_name]
+    header, footer = _CLS_MAP[class_name]
     cmd = header.format(VM_ID=self.id)
     cmd += _generate_wmi_properties_setters(properties)
-    cmd += footer + JOB_HANDLE_FOOTER
+    cmd += footer + _JOB_HANDLER_FOOTER
     await exec_powershell_checked(cmd)
 
   async def apply_properties_group(self, properties_group: Dict[str, Dict[str, Any]]):
@@ -278,7 +281,7 @@ class VirtualMachine(object):
 
     :param properties_group: dict of classes and their properties
     """
-    for cls, properties in sorted(properties_group.items(), key=lambda itm: CLS_MAP_PRIORITY.get(itm[0], 100)):
+    for cls, properties in sorted(properties_group.items(), key=lambda itm: _CLS_MAP_PRIORITY.get(itm[0], 100)):
       await self.apply_properties(cls, properties)
 
   @property
