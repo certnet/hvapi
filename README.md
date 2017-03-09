@@ -5,15 +5,16 @@ python api for creation and management of Hyper-V virtual machines.
 
 ## Design
 
-All operations performed via simple powershell scripts, executed via *asyncio.create_subprocess_exec*. I dit not used
-some native api, because there are lot of existing powershell code for working with Hyper-V via powershell, so it is much
-simpler just to copy-paste that code :smile:.
+All operations performed via simple powershell scripts, executed using *asyncio.create_subprocess_exec*. I did not used
+some native api, because there are lot of existing powershell code for working with Hyper-V, so it is much simpler just 
+to copy-paste that code :smile:.
 
 ## Roadmap
 
 * switch to some wmi library(most likely it will be native **.Net Microsoft.Management**  via **pythonnet** bindings, it
 works faster than native python **wmi** package)
-* add auto-generated documentation, unit tests(maybe)
+* add auto-generated documentation
+* unit tests(maybe)
 
 ## License
 

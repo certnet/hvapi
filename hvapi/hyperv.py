@@ -61,7 +61,9 @@ foreach ($vm in $vms) {{
 $vm | Select-Object -Property *
 Write-Host --------------------
 }}"""
-
+_HOST_MACHINE_CREATE_CMD = """
+New-VM -Name {NAME} -Generation {GENERATION} | Select-Object -Property *
+"""
 # adapter scripts
 _ADAPTER_GET_CONCRETE_ADAPTER_CMD = """$adapters = Get-VMNetworkAdapter -VM (Get-Vm -Id {VM_ID})
 $adapters | Where-Object -Property Id -eq {ADAPTER_ID} | Select-Object -Property *
@@ -172,8 +174,8 @@ _CLS_MAP_PRIORITY = {
 # endregion
 
 class VirtualMachineGeneration(str, Enum):
-  GEN1 = "Microsoft:Hyper-V:SubType:1"
-  GEN2 = "Microsoft:Hyper-V:SubType:2"
+  GEN1 = "1"
+  GEN2 = "2"
 
 
 class VirtualMachineState(int, Enum):
@@ -484,10 +486,18 @@ class HypervHost(object):
     if machines:
       return machines[0]
 
-  async def create_machine(self, name, properties_group: Dict[str, Dict[str, Any]] = None,
-                           machine_generation: VirtualMachineGeneration = VirtualMachineGeneration.GEN1) -> VirtualMachine:
-    # TODO implement
-    pass
+  async def create_machine(
+      self,
+      name,
+      properties_group: Dict[str, Dict[str, Any]] = None,
+      machine_generation: VirtualMachineGeneration = VirtualMachineGeneration.GEN1
+  ) -> VirtualMachine:
+    out = await exec_powershell_checked(_HOST_MACHINE_CREATE_CMD.format(NAME=name, GENERATION=machine_generation.value))
+    machine_properties = parse_properties(out)
+    machine_object = VirtualMachine(machine_properties["VMId"], machine_properties["VMName"])
+    if properties_group:
+      await machine_object.apply_properties_group(properties_group)
+    return machine_object
 
   @staticmethod
   async def _common_get(cmd, cls, properties):

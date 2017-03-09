@@ -38,22 +38,25 @@ logging.basicConfig(format=FORMAT, level=logging.DEBUG)
 
 async def main_coro():
   host = HypervHost()
-  hello_machine = (await host.machines_by_name("centos6.8"))[0]
-  print(await hello_machine.state)
-  # settings = {
-  #   "Msvm_MemorySettingData": {
-  #     "DynamicMemoryEnabled": True,
-  #     "Limit": 4096,
-  #     "Reservation": 2048,
-  #     "VirtualQuantity": 2048
-  #   },
-  #   "Msvm_ProcessorSettingData": {
-  #     "VirtualQuantity": 8
-  #   },
-  #   "Msvm_VirtualSystemSettingData": {
-  #     "VirtualNumaEnabled ": False
-  #   }
-  # }
+  settings = {
+    "Msvm_MemorySettingData": {
+      "DynamicMemoryEnabled": True,
+      "Limit": 4096,
+      "Reservation": 2048,
+      "VirtualQuantity": 2048
+    },
+    "Msvm_ProcessorSettingData": {
+      "VirtualQuantity": 8
+    },
+    "Msvm_VirtualSystemSettingData": {
+      "VirtualNumaEnabled ": False
+    }
+  }
+  machine = await host.create_machine("test_machine", settings)
+  print(await machine.state)
+  # hello_machine = (await host.machines_by_name("centos6.8"))[0]
+  # print(await hello_machine.state)
+
   # await hello_machine.apply_properties_group(settings)
 
 loop = asyncio.get_event_loop()
