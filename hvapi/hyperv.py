@@ -83,8 +83,9 @@ foreach ($comport in $comports) {{
 $comport | Select-Object -Property *
 Write-Host --------------------
 }}"""
-_MACHINE_CONNECT_TO_SWITCH_CMD = 'Add-VMNetworkAdapter -VMName "{VM_NAME}" -SwitchName "{SWITCH_NAME}"'
-_MACHINE_ADD_VHD_CMD = 'Add-VMHardDiskDrive -VMName "{VM_NAME}" -Path "{VHD_PATH}"'
+_MACHINE_CONNECT_TO_SWITCH_CMD = 'Add-VMNetworkAdapter -VM (Get-Vm -Id {ID}) -SwitchName "{SWITCH_NAME}"'
+_MACHINE_CONNECT_TO_SWITCH_STATIC_MAC_CMD = 'Add-VMNetworkAdapter -VM (Get-Vm -Id {ID}) -SwitchName "{SWITCH_NAME}" -StaticMacAddress "{STATIC_MAC}"'
+_MACHINE_ADD_VHD_CMD = 'Add-VMHardDiskDrive -VM (Get-Vm -Id {ID}) -Path "{VHD_PATH}"'
 _MACHINE_GET_PROPERTY_CMD = '(Get-Vm -Id {ID}).{PROPERTY}'
 _MACHINE_STOP_FORCE_CMD = 'Stop-VM -VM (Get-Vm -Id {ID}) -Force'
 _MACHINE_STOP_TURNOFF_CMD = 'Stop-VM -VM (Get-Vm -Id {ID}) -TurnOff -Force'
@@ -399,16 +400,26 @@ class VirtualMachine(object):
   async def pause(self):
     await exec_powershell_checked(_MACHINE_PAUSE_CMD.format(ID=self.id))
 
-  async def connect_to_switch(self, virtual_switch: 'VirtualSwitch'):
+  async def connect_to_switch(self, virtual_switch: 'VirtualSwitch', static_mac=None) -> 'VirtualMachineNetworkAdapter':
     """
     Connects machine to given ``VirtualSwitch``.
 
+    :param static_mac: static mac that will be assigned, None will set dynamic one
     :param virtual_switch: virtual switch to connect
     """
-    if not self.is_connected_to_switch(virtual_switch):
-      await exec_powershell_checked(
-        _MACHINE_CONNECT_TO_SWITCH_CMD.format(VM_NAME=self.name, SWITCH_NAME=virtual_switch.name)
-      )
+    # TODO optimize in one powershell call
+    if not await self.is_connected_to_switch(virtual_switch):
+      if static_mac:
+        await exec_powershell_checked(
+          _MACHINE_CONNECT_TO_SWITCH_STATIC_MAC_CMD.format(ID=self.id, SWITCH_NAME=virtual_switch.name, STATIC_MAC=static_mac)
+        )
+      else:
+        await exec_powershell_checked(
+          _MACHINE_CONNECT_TO_SWITCH_CMD.format(ID=self.id, SWITCH_NAME=virtual_switch.name)
+        )
+    for adapter in await self.network_adapters:
+      if await adapter.switch == virtual_switch:
+        return adapter
 
   async def is_connected_to_switch(self, virtual_switch: 'VirtualSwitch'):
     """
@@ -428,7 +439,7 @@ class VirtualMachine(object):
 
     :param vhd_disk: ``VHDDisk`` to add to machine
     """
-    await exec_powershell_checked(_MACHINE_ADD_VHD_CMD.format(VM_NAME=self.name, VHD_PATH=vhd_disk.vhd_file_path))
+    await exec_powershell_checked(_MACHINE_ADD_VHD_CMD.format(ID=self.id, VHD_PATH=vhd_disk.vhd_file_path))
 
   @property
   async def network_adapters(self) -> List[VirtualMachineNetworkAdapter]:

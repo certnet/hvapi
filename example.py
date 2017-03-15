@@ -38,6 +38,7 @@ logging.basicConfig(format=FORMAT, level=logging.DEBUG)
 
 async def main_coro():
   host = HypervHost()
+  switch = (await host.switches_by_name("internal"))[0]
   settings = {
     "Msvm_MemorySettingData": {
       "DynamicMemoryEnabled": True,
@@ -52,8 +53,9 @@ async def main_coro():
       "VirtualNumaEnabled ": False
     }
   }
-  machine = await host.create_machine("test_machine", settings)
-  print(await machine.state)
+  machine = (await host.machines_by_name("test_machine"))[0]
+  adapter = await machine.connect_to_switch(switch, static_mac="00:11:22:33:44:55")
+  print(await adapter.address)
   # hello_machine = (await host.machines_by_name("centos6.8"))[0]
   # print(await hello_machine.state)
 
