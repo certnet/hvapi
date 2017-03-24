@@ -1,34 +1,35 @@
-# import logging
-#
-# from hvapi.clr_utils import InvocationException, Node, Relation, VirtualSystemSettingDataNode, Property, MOHTransformers
-# from hvapi.hyperv_nonblocking import HypervHost
-#
-# FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
-# logging.basicConfig(format=FORMAT, level=logging.DEBUG)
-#
-# path = (
-#   VirtualSystemSettingDataNode,
-#   Node(Relation.RELATED, "Msvm_SyntheticEthernetPortSettingData"),
-#   Node(Relation.RELATED, "Msvm_EthernetPortAllocationSettingData"),
-#   Node(Relation.PROPERTY, "HostResource", (Property.ARRAY, MOHTransformers.from_reference))
-# )
-# hv_host = HypervHost()
-# hello_vm = hv_host.machines_by_name("hello")[-1]
-# hello_vm.connect_to_switch("hello")
-# res = hello_vm.traverse(path)
-# # res = hello_vm.traverse(path)
-# # try:
-# #   hello_vm.start()
-# # except InvocationException:
-# #   raise
-# # hello_vm.stop()
-# # hello_vm.pause()
-# # hello_vm.start()
-# print(hello_vm.state)
+import logging
 
-class Mac(object):
-  def __init__(self):
-    self.b1 = 0
-    self.b2 = 0
-    self.b3 = 0
-    sel
+from hvapi.clr_utils import InvocationException, Node, Relation, VirtualSystemSettingDataNode, Property, MOHTransformers, \
+  VirtualSystemManagementService
+from hvapi.hyperv_nonblocking import HypervHost, ComPort
+
+FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+logging.basicConfig(format=FORMAT, level=logging.DEBUG)
+
+path = (
+  VirtualSystemSettingDataNode,
+  Node(Relation.RELATED, "Msvm_SyntheticEthernetPortSettingData"),
+  Node(Relation.RELATED, "Msvm_EthernetPortAllocationSettingData"),
+  Node(Relation.PROPERTY, "HostResource", (Property.ARRAY, MOHTransformers.from_reference))
+)
+hv_host = HypervHost()
+settings = {
+  "Msvm_MemorySettingData": {
+    "DynamicMemoryEnabled": True,
+    "Limit": 4096,
+    "Reservation": 2048,
+    "VirtualQuantity": 2048
+  },
+  "Msvm_ProcessorSettingData": {
+    "VirtualQuantity": 8
+  },
+  "Msvm_VirtualSystemSettingData": {
+    "VirtualNumaEnabled": False
+  }
+}
+test1_vm = hv_host.create_machine("test1", settings)
+# comport2 = hello_vm.get_com_port(ComPort.COM1)
+# print(comport2.name)
+
+pass

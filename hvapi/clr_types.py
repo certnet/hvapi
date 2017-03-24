@@ -196,3 +196,18 @@ class VSMS_ModifyResourceSettings_ReturnCode(RangedCodeEnum):
   Method_Parameters_Checked_Job_Started = 4096
   Method_Reserved = (4097, 32767)
   Vendor_Specific = (32768, 65535)
+
+
+class VSMS_AddResourceSettings_ReturnCode(RangedCodeEnum):
+  """
+  VirtualSystemManagementService ModifyResourceSettings method return codes.
+  """
+  Completed_with_No_Error = 0
+  Not_Supported = 1
+  Failed = 2
+  Timeout = 3
+  Invalid_Parameter = 4
+  # DMTF_Reserved = ?
+  Method_Parameters_Checked_Job_Started = 4096
+  Method_Reserved = (4097, 32767)
+  Vendor_Specific = (32768, 65535)

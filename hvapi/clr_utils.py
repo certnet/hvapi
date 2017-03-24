@@ -1,20 +1,26 @@
 import clr
+import collections
+import time
 from enum import Enum
 from typing import Tuple, Callable, Iterable, Union, List, Any, Sized
 
-import collections
-
-import time
-
-from hvapi.clr_types import Msvm_ConcreteJob_JobState, VSMS_ModifyResourceSettings_ReturnCode, \
-  VSMS_ModifySystemSettings_ReturnCode
-from hvapi.types import VSMS_ModifySystemSettings_ReturnCode, VSMS_ModifyResourceSettings_ReturnCode
+from hvapi.clr_types import Msvm_ConcreteJob_JobState, VSMS_AddResourceSettings_ReturnCode
+from hvapi.clr_types import VSMS_ModifySystemSettings_ReturnCode, VSMS_ModifyResourceSettings_ReturnCode
 from hvapi.common_types import RangedCodeEnum
 
 clr.AddReference("System.Management")
 from System.Management import ManagementScope, ObjectQuery, ManagementObjectSearcher, ManagementObject, CimType, \
-  ManagementException, ObjectGetOptions
-from System import Array, String
+  ManagementException, ManagementClass
+from System import Array, String, Guid
+
+# WARNING, clr_Array accepts iterable, e.g. ig you will pass string - it will be array of its chars, not array of one
+# string. clr_Array[clr_String](["hello"]) equals to array with one "hello" string in it
+clr_Array = Array
+clr_String = String
+
+
+def generate_guid(fmt="B"):
+  return Guid.NewGuid().ToString(fmt)
 
 
 class CimTypeTransformer(object):
@@ -131,10 +137,15 @@ class ScopeHolder(object):
     if result:
       return result[0]
 
+  def cls_instance(self, class_name):
+    cls = ManagementClass(str(self.scope.Path) + ":" + class_name)
+    return ManagementObjectHolder(cls.CreateInstance(), self)
+
 
 class JobException(Exception):
   def __init__(self, job):
-    msg = "Job code:'%s' status:'%s' description:'%s'" % (job.ErrorCode, job.JobStatus, job.ErrorDescription)
+    msg = "Job code:'%s' status:'%s' description:'%s'" % (
+      job.properties.ErrorCode, job.properties.JobStatus, job.properties.ErrorDescription)
     super().__init__(msg)
 
 
@@ -148,7 +159,10 @@ class PropertiesHolder(object):
 
   def __getattribute__(self, key):
     if key != 'management_object':
-      return self.management_object.Properties[key].Value
+      try:
+        return self.management_object.Properties[key].Value
+      except ManagementException as e:
+        pass
     return super().__getattribute__(key)
 
   def __setattr__(self, key, value):
@@ -161,6 +175,9 @@ class PropertiesHolder(object):
         pass
     super().__setattr__(key, value)
 
+  def __getitem__(self, item):
+    return self.management_object.Properties[item].Value
+
 
 class ManagementObjectHolder(object):
   def __init__(self, management_object, scope_holder: ScopeHolder):
@@ -172,6 +189,10 @@ class ManagementObjectHolder(object):
 
   @property
   def properties(self):
+    return PropertiesHolder(self.management_object)
+
+  @property
+  def properties_dict(self):
     result = {}
     for _property in self.management_object.Properties:
       result[_property.Name] = _property.Value
@@ -192,8 +213,11 @@ class ManagementObjectHolder(object):
       if parameter.IsArray:
         if not isinstance(kwargs[parameter_name], collections.Iterable):
           raise ValueError("Parameter '%s' must be iterable" % parameter_name)
-        parameter_value = Array[parameter_type](
-          [self._transform_object(item, parameter_type) for item in kwargs[parameter_name]])
+        array_items = [self._transform_object(item, parameter_type) for item in kwargs[parameter_name]]
+        if array_items:
+          parameter_value = Array[parameter_type](array_items)
+        else:
+          parameter_value = None
       else:
         parameter_value = self._transform_object(kwargs[parameter_name], parameter_type)
 
@@ -225,6 +249,8 @@ class ManagementObjectHolder(object):
     if isinstance(obj, ManagementObject):
       if expected_type == String:
         return String(obj.GetText(2))
+      if expected_type == ManagementObject:
+        return obj
       raise ValueError("Object '%s' can not be transformed to '%s'" % (obj, expected_type))
 
     if isinstance(obj, (String, str)):
@@ -310,10 +336,11 @@ class ManagementObjectHolder(object):
   def _evaluate_invocation_result(result, codes_enum: RangedCodeEnum, ok_value, job_value):
     return_value = codes_enum.from_code(result['ReturnValue'])
     if return_value == job_value:
-      return ConcreteJob.from_moh(result['Job']).wait()
+      ConcreteJob.from_moh(result['Job']).wait()
+      return result
     if return_value != ok_value:
       raise InvocationException("Failed execute method with return value '%s'" % return_value.name)
-    return return_value
+    return result
 
   @staticmethod
   def _create_cls_from_moh(cls, cls_name, moh):
@@ -357,90 +384,29 @@ class VirtualSystemManagementService(ManagementObjectHolder):
       VSMS_ModifySystemSettings_ReturnCode.Method_Parameters_Checked_Job_Started
     )
 
+  def AddResourceSettings(self, AffectedConfiguration, *args):
+    out_objects = self.invoke("AddResourceSettings", AffectedConfiguration=AffectedConfiguration, ResourceSettings=args)
+    return self._evaluate_invocation_result(
+      out_objects,
+      VSMS_AddResourceSettings_ReturnCode,
+      VSMS_AddResourceSettings_ReturnCode.Completed_with_No_Error,
+      VSMS_AddResourceSettings_ReturnCode.Method_Parameters_Checked_Job_Started
+    )
+
+    """ResourceSettings=[], ReferenceConfiguration=None,
+    #                                                     SystemSettings
+    """
+
+  def DefineSystem(self, SystemSettings, ResourceSettings=[], ReferenceConfiguration=None):
+    out_objects = self.invoke("DefineSystem", SystemSettings=SystemSettings, ResourceSettings=ResourceSettings,
+                              ReferenceConfiguration=ReferenceConfiguration)
+    return self._evaluate_invocation_result(
+      out_objects,
+      VSMS_AddResourceSettings_ReturnCode,
+      VSMS_AddResourceSettings_ReturnCode.Completed_with_No_Error,
+      VSMS_AddResourceSettings_ReturnCode.Method_Parameters_Checked_Job_Started
+    )
+
   @classmethod
-  def from_moh(cls, moh: 'ManagementObjectHolder') -> 'VirtualSystemManagementService':
+  def from_holder(cls, moh: 'ManagementObjectHolder') -> 'VirtualSystemManagementService':
     return cls._create_cls_from_moh(cls, 'Msvm_VirtualSystemManagementService', moh)
-
-
-### TESTING
-# scope = ScopeHolder()
-
-# system_service = VirtualSystemManagementService.from_holder(
-#   scope.query_one('SELECT * FROM Msvm_VirtualSystemManagementService'))
-
-# linux_machine = scope.query_one(
-#   'SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND ElementName="hello"')
-# path = (
-#   Node(
-#     Path.RELATED,
-#     (
-#       "Msvm_VirtualSystemSettingData",
-#       "Msvm_SettingsDefineState",
-#       None,
-#       None,
-#       "SettingData",
-#       "ManagedElement",
-#       False,
-#       None
-#     )
-#   )
-#   ,
-#   # Node(Path.RELATED, "Msvm_ProcessorSettingData")
-# )
-
-# res = (linux_machine.traverse(path))[-1][-1]
-# res = (linux_machine.traverse(path))[-1]
-# res.oh_lol = 1
-# print(res.oh_lol)
-# print(res.VirtualQuantity)
-# res.management_object.Properties['VirtualQuantity'].Value = 8
-# modification_result = system_service.ModifySystemSettings(res)
-
-pass
-# in_props = system_service.management_object.GetMethodParameters("ModifySystemSettings")
-# in_props.Properties["SystemSettings"].Value = .management_object.GetText(2)
-# out_params = system_service.management_object.InvokeMethod(, in_props, None)
-pass
-# manScope = ManagementScope(r"\\.\root\virtualization\v2")
-# queryObj = ObjectQuery('SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND ElementName="linux"')
-# vmSearcher = ManagementObjectSearcher(manScope, queryObj)
-# vmCollection = vmSearcher.Get()
-#
-# path = (
-#   Node(
-#     Path.RELATED,
-#     (
-#       "Msvm_VirtualSystemSettingData",
-#       "Msvm_SettingsDefineState",
-#       None,
-#       None,
-#       "SettingData",
-#       "ManagedElement",
-#       False,
-#       None
-#     )
-#   ),
-#   Node(Path.RELATED, "Msvm_SyntheticEthernetPortSettingData"),
-#   Node(Path.RELATED, "Msvm_EthernetPortAllocationSettingData"),
-#   Node(Path.PROPERTY, "HostResource", (Property.ARRAY, ManagementObject_from_path))
-# )
-# for vm in vmCollection:
-#   # res = management_object_traversal(path, vm)
-#   res = ManagementObjectHolder(manScope, vm).traverse(path)
-#   print()
-# // define the information we want to query - in this case, just grab all properties of the object
-# ObjectQuery queryObj = new ObjectQuery("SELECT * FROM Msvm_ComputerSystem");
-#
-# // connect and set up our search
-# ManagementObjectSearcher vmSearcher = new ManagementObjectSearcher(manScope, queryObj);
-# ManagementObjectCollection vmCollection = vmSearcher.Get();
-#
-# // loop through the machines
-# foreach (ManagementObject vm in vmCollection)
-# {
-#     // display VM details
-#     Console.WriteLine("\nName: {0}\nStatus: {1}\nDescription: {2}\n",
-#                         vm["ElementName"].ToString(),
-#                         vm["EnabledState"].ToString(),
-#                         vm["Description"].ToString());
-# }
