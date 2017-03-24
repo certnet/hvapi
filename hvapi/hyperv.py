@@ -411,7 +411,8 @@ class VirtualMachine(object):
     if not await self.is_connected_to_switch(virtual_switch):
       if static_mac:
         await exec_powershell_checked(
-          _MACHINE_CONNECT_TO_SWITCH_STATIC_MAC_CMD.format(ID=self.id, SWITCH_NAME=virtual_switch.name, STATIC_MAC=static_mac)
+          _MACHINE_CONNECT_TO_SWITCH_STATIC_MAC_CMD.format(ID=self.id, SWITCH_NAME=virtual_switch.name,
+                                                           STATIC_MAC=static_mac)
         )
       else:
         await exec_powershell_checked(
@@ -472,7 +473,15 @@ class VirtualMachine(object):
     await exec_powershell_checked(_MACHINE_ADD_COMPORT_CMD.format(ID=self.id, NUMBER=number, PATH=path))
 
 
+from hvapi import clr_utils
+
+
 class HypervHost(object):
+  def __init__(self, scope=None):
+    self.scope = scope
+    if not self.scope:
+      self.scope = clr_utils.ManagementScope(r"\\.\root\virtualization\v2")
+
   @property
   async def switches(self) -> List[VirtualSwitch]:
     return await self._common_get(_HOST_ALL_SWITCHES_CMD, VirtualSwitch, ("Id", "Name"))
