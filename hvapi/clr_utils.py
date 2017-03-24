@@ -6,12 +6,14 @@ import collections
 
 import time
 
-from hvapi.clr_types import Msvm_ConcreteJob_JobState, VSMS_ModifySystemSettings_ReturnCode, RangedCodeEnum, \
-  VSMS_ModifyResourceSettings_ReturnCode
+from hvapi.clr_types import Msvm_ConcreteJob_JobState, VSMS_ModifyResourceSettings_ReturnCode, \
+  VSMS_ModifySystemSettings_ReturnCode
+from hvapi.types import VSMS_ModifySystemSettings_ReturnCode, VSMS_ModifyResourceSettings_ReturnCode
+from hvapi.common_types import RangedCodeEnum
 
 clr.AddReference("System.Management")
 from System.Management import ManagementScope, ObjectQuery, ManagementObjectSearcher, ManagementObject, CimType, \
-  ManagementException
+  ManagementException, ObjectGetOptions
 from System import Array, String
 
 
@@ -32,8 +34,12 @@ class CimTypeTransformer(object):
       return String
     if value == CimType.Reference:
       return ManagementObject
-    if value == CimType.UInt32:
+    if value in (CimType.UInt32, CimType.UInt16):
       return int
+    if value == CimType.DateTime:
+      return String
+    if value == CimType.Boolean:
+      return bool
     raise Exception("unknown type")
 
 
@@ -43,9 +49,10 @@ class MOHTransformers(object):
     return ManagementObjectHolder(ManagementObject(object_reference), parent.scope_holder)
 
 
-class Path(int, Enum):
+class Relation(int, Enum):
   RELATED = 0
-  PROPERTY = 1
+  RELATIONSHIP = 1
+  PROPERTY = 2
 
 
 class Property(int, Enum):
@@ -54,25 +61,55 @@ class Property(int, Enum):
 
 
 class Node(object):
+  """
+  Represents methods of traversing for WMI object hierarchy. Each Node correspondents >=0 ManagementObjects that somehow
+  related to given object. Relations can be represented as GetRelated, GetRelationships methods call results (from
+  ManagementObject) or as transformed ManagementObject reference grabbed form parent object property.
+  """
+
   def __init__(
       self,
-      node_type: Path,
-      path_item: Union[str, Tuple],
-      property_type: Tuple[Property, Callable[[Any, 'ManagementObjectHolder'], 'ManagementObjectHolder']] = None,
-      include=True
+      relation_type: Relation,
+      path_args: Union[str, Tuple],
+      property_data: Tuple[Property, Callable[[Any, 'ManagementObjectHolder'], 'ManagementObjectHolder']] = None,
+      selector: Callable[['ManagementObjectHolder'], bool] = None
   ):
-    self.node_type = node_type
-    if not isinstance(path_item, (list, tuple)):
-      self.path_item = (path_item,)
+    """
+    Constructs node. ``property_data`` contains from property type(array, or single property), and callable to transform
+    property data to ManagementObject. ``selector`` is a callable that used to filter out unnecessary nodes, it will
+    retrieve ManagementObject instance and need return True if this ManagementObject meets our requirements.
+
+    :param relation_type: type of relation
+    :param path_args: arguments to be passed to GetRelated, GetRelationships, or string for Relation.PROPERTY
+    :param property_data: stuff related to Relation.PROPERTY
+    :param selector: callable, that must return True if object is ok for us
+    """
+    self.relation_type = relation_type
+
+    if not isinstance(path_args, (list, tuple)):
+      self.path_args = (path_args,)
     else:
-      self.path_item = path_item
+      self.path_args = path_args
+
     self.property_type = None
     self.property_transformer = lambda x, y: x
-    if property_type:
-      self.property_type = property_type[0]
-      if len(property_type) == 2:
-        self.property_transformer = property_type[1]
-    self.include = include
+    if property_data:
+      self.property_type = property_data[0]
+      if len(property_data) == 2:
+        self.property_transformer = property_data[1]
+    self.selector = selector
+
+
+VirtualSystemSettingDataNode = Node(Relation.RELATED, (
+  "Msvm_VirtualSystemSettingData", "Msvm_SettingsDefineState", None, None, "SettingData", "ManagedElement", False,
+  None))
+
+
+def PropertySelector(property_name, expected_value):
+  def _sel(obj):
+    return obj.properties[property_name] == expected_value
+
+  return _sel
 
 
 class ScopeHolder(object):
@@ -105,23 +142,17 @@ class InvocationException(Exception):
   pass
 
 
-class ManagementObjectHolder(object):
-  def __init__(self, management_object, scope_holder: ScopeHolder):
-    self.scope_holder = scope_holder
+class PropertiesHolder(object):
+  def __init__(self, management_object):
     self.management_object = management_object
 
   def __getattribute__(self, key):
-    if key not in ['management_object', 'scope_holder']:
-      try:
-        return self.management_object.Properties[key].Value
-      except ManagementException:
-        pass
-      except AttributeError:
-        pass
+    if key != 'management_object':
+      return self.management_object.Properties[key].Value
     return super().__getattribute__(key)
 
   def __setattr__(self, key, value):
-    if key not in ['management_object', 'scope_holder']:
+    if key != 'management_object':
       try:
         self.management_object.Properties[key].Value = value
       except ManagementException:
@@ -130,6 +161,15 @@ class ManagementObjectHolder(object):
         pass
     super().__setattr__(key, value)
 
+
+class ManagementObjectHolder(object):
+  def __init__(self, management_object, scope_holder: ScopeHolder):
+    self.scope_holder = scope_holder
+    self.management_object = management_object
+
+  def reload(self):
+    self.management_object.Get()
+
   @property
   def properties(self):
     result = {}
@@ -137,7 +177,7 @@ class ManagementObjectHolder(object):
       result[_property.Name] = _property.Value
     return result
 
-  def traverse(self, traverse_path: Iterable[Node]):
+  def traverse(self, traverse_path: Iterable[Node]) -> List[List['ManagementObjectHolder']]:
     return self._internal_traversal(traverse_path, self)
 
   def invoke(self, method_name, **kwargs):
@@ -172,6 +212,9 @@ class ManagementObjectHolder(object):
       transformed_result[_property.Name] = _property_value
     return transformed_result
 
+  def __str__(self):
+    return str(self.management_object)
+
   def _transform_object(self, obj, expected_type=None):
     if obj is None:
       return None
@@ -192,26 +235,58 @@ class ManagementObjectHolder(object):
       if expected_type == int:
         return obj
 
+    if isinstance(obj, bool):
+      if expected_type == bool:
+        return obj
+
+    if isinstance(obj, (str, String)):
+      if expected_type == String:
+        return String
+
     raise Exception("Unknown object to transform: '%s'" % obj)
 
   @staticmethod
   def _get_node_objects(parent_object: 'ManagementObjectHolder', node: 'Node'):
     results = []
-    if node.node_type == Path.PROPERTY:
-      if node.include:
-        val = parent_object.management_object.Properties[node.path_item[0]].Value
-        if node.property_type == Property.SINGLE:
-          results.append([node.property_transformer(val, parent_object)])
-        elif node.property_type == Property.ARRAY:
-          for val_item in val:
-            results.append([node.property_transformer(val_item, parent_object)])
+    if node.relation_type == Relation.PROPERTY:
+      val = parent_object.management_object.Properties[node.path_args[0]].Value
+      if node.property_type == Property.SINGLE:
+        _result = node.property_transformer(val, parent_object)
+        if node.selector:
+          if node.selector(_result):
+            results.append(_result)
         else:
-          raise Exception("Unknown property type")
+          results.append(_result)
+      elif node.property_type == Property.ARRAY:
+        for val_item in val:
+          _result = node.property_transformer(val_item, parent_object)
+          if node.selector:
+            if node.selector(_result):
+              results.append(_result)
+          else:
+            results.append(_result)
+      else:
+        raise Exception("Unknown property type")
       return results
-    elif node.node_type == Path.RELATED:
-      for rel_object in parent_object.management_object.GetRelated(*node.path_item):
+    elif node.relation_type == Relation.RELATED:
+      for rel_object in parent_object.management_object.GetRelated(*node.path_args):
         if not parent_object.management_object == rel_object:
-          results.append(ManagementObjectHolder(rel_object, parent_object.scope_holder))
+          _result = ManagementObjectHolder(rel_object, parent_object.scope_holder)
+          if node.selector:
+            if node.selector(_result):
+              results.append(_result)
+          else:
+            results.append(_result)
+      return results
+    elif node.relation_type == Relation.RELATIONSHIP:
+      for rel_object in parent_object.management_object.GetRelationships(*node.path_args):
+        if not parent_object.management_object == rel_object:
+          _result = ManagementObjectHolder(rel_object, parent_object.scope_holder)
+          if node.selector:
+            if node.selector(_result):
+              results.append(_result)
+          else:
+            results.append(_result)
       return results
     else:
       raise Exception("Unknown path part type")
@@ -221,16 +296,13 @@ class ManagementObjectHolder(object):
     results = []
     if len(traverse_path) == 1:
       for obj in cls._get_node_objects(parent, traverse_path[0]):
-        results.append(obj)
+        results.append([obj])
       return results
     else:
       for obj in cls._get_node_objects(parent, traverse_path[0]):
-        for child in cls._internal_traversal(traverse_path[1:], obj):
+        for children in cls._internal_traversal(traverse_path[1:], obj):
           cur_res = [obj]
-          if isinstance(child, list):
-            cur_res.extend(child)
-          else:
-            cur_res.append(child)
+          cur_res.extend(children)
           results.append(cur_res)
       return results
 
@@ -240,7 +312,7 @@ class ManagementObjectHolder(object):
     if return_value == job_value:
       return ConcreteJob.from_moh(result['Job']).wait()
     if return_value != ok_value:
-      raise InvocationException("Failed to modify resource with code '%s'" % return_value.name)
+      raise InvocationException("Failed execute method with return value '%s'" % return_value.name)
     return return_value
 
   @staticmethod
@@ -252,9 +324,11 @@ class ManagementObjectHolder(object):
 
 class ConcreteJob(ManagementObjectHolder):
   def wait(self):
-    job_state = Msvm_ConcreteJob_JobState.from_code(self.JobState)
+    job_state = Msvm_ConcreteJob_JobState.from_code(self.properties['JobState'])
     while job_state not in [Msvm_ConcreteJob_JobState.Completed, Msvm_ConcreteJob_JobState.Terminated,
                             Msvm_ConcreteJob_JobState.Killed, Msvm_ConcreteJob_JobState.Exception]:
+      job_state = Msvm_ConcreteJob_JobState.from_code(self.properties['JobState'])
+      self.reload()
       time.sleep(.1)
     if job_state != Msvm_ConcreteJob_JobState.Completed:
       raise JobException(self)
