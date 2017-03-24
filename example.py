@@ -54,6 +54,9 @@ async def main_coro():
     }
   }
   machine = (await host.machines_by_name("test_machine"))[0]
+  print(await machine.state)
+  pass
+  pass
   # adapter = await machine.connect_to_switch(switch, static_mac="00:11:22:33:44:55")
   # print(await adapter.address)
   # hello_machine = (await host.machines_by_name("centos6.8"))[0]

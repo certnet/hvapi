@@ -29,6 +29,7 @@ from typing import List, Dict, Any
 
 from hvapi.hv_types_internal import VirtualMachineStateInternal
 from hvapi.powershell_utils import parse_properties, exec_powershell_checked, parse_select_object_output
+from hvapi.clr_utils import ScopeHolder, ManagementObjectHolder
 
 # region PRIVATE
 # ps scripts
@@ -280,16 +281,12 @@ class VirtualMachineComPort(object):
     return (await self.properties)['Path']
 
 
-class VirtualMachine(object):
+class VirtualMachine(ManagementObjectHolder):
   """
   Represents virtual machine. Gives access to machine name and id, network adapters, gives ability to start,
   stop, pause, save, reset machine.
   """
   LOG = logging.getLogger('%s.%s' % (__module__, __qualname__))
-
-  def __init__(self, machine_id: str, name: str):
-    self.machine_id = machine_id
-    self.machine_name = name
 
   async def apply_properties(self, class_name: str, properties: Dict[str, Any]):
     """
@@ -320,7 +317,7 @@ class VirtualMachine(object):
 
     :return: virtual machine name
     """
-    return self.machine_name
+    return self.ElementName
 
   @property
   def id(self) -> str:
@@ -329,7 +326,7 @@ class VirtualMachine(object):
 
     :return: virtual machine identifier
     """
-    return self.machine_id
+    return self.Name
 
   @property
   async def state(self, timeout=30) -> VirtualMachineState:
@@ -472,15 +469,16 @@ class VirtualMachine(object):
   async def add_com_port(self, number, path):
     await exec_powershell_checked(_MACHINE_ADD_COMPORT_CMD.format(ID=self.id, NUMBER=number, PATH=path))
 
-
-from hvapi import clr_utils
+  @classmethod
+  def from_moh(cls, moh: ManagementObjectHolder) -> 'VirtualMachine':
+    return cls._create_cls_from_moh(cls, 'Msvm_ComputerSystem', moh)
 
 
 class HypervHost(object):
   def __init__(self, scope=None):
     self.scope = scope
     if not self.scope:
-      self.scope = clr_utils.ManagementScope(r"\\.\root\virtualization\v2")
+      self.scope = ScopeHolder()
 
   @property
   async def switches(self) -> List[VirtualSwitch]:
@@ -496,15 +494,18 @@ class HypervHost(object):
 
   @property
   async def machines(self) -> List[VirtualMachine]:
-    return await self._common_get(_HOST_ALL_MACHINES_CMD, VirtualMachine, ("VMId", "VMName"))
+    machines = self.scope.query('SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine"')
+    return [VirtualMachine.from_moh(_machine) for _machine in machines] if machines else []
 
   async def machines_by_name(self, name) -> List[VirtualMachine]:
-    return await self._common_get(_HOST_MACHINE_BY_NAME_CMD.format(NAME=name), VirtualMachine, ("VMId", "VMName"))
+    machines = self.scope.query(
+      'SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND ElementName = "%s"' % name)
+    return [VirtualMachine.from_moh(_machine) for _machine in machines] if machines else []
 
   async def machine_by_id(self, machine_id) -> VirtualMachine:
-    machines = await self._common_get(_HOST_MACHINE_BY_ID_CMD.format(ID=machine_id), VirtualMachine, ("VMId", "VMName"))
-    if machines:
-      return machines[0]
+    machines = self.scope.query(
+      'SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND Name = "%s"' % machine_id)
+    return [VirtualMachine.from_moh(_machine) for _machine in machines] if machines else []
 
   async def create_machine(
       self,

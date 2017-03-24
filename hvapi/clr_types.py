@@ -33,7 +33,21 @@ class Msvm_ConcreteJob_JobState(RangedCodeEnum):
   Vendor_Reserved = (32768, 65535)
 
 
-class ModifyResourceSettings_ReturnCode(RangedCodeEnum):
+class VSMS_ModifySystemSettings_ReturnCode(RangedCodeEnum):
+  Completed_with_No_Error = 0
+  Not_Supported = 1
+  Failed = 2
+  Timeout = 3
+  Invalid_Parameter = 4
+  Invalid_State = 5
+  Incompatible_Parameters = 6
+  # DMTF_Reserved = ?
+  Method_Parameters_Checked_Job_Started = 4096
+  Method_Reserved = (4097, 32767)
+  Vendor_Specific = (32768, 65535)
+
+
+class VSMS_ModifyResourceSettings_ReturnCode(RangedCodeEnum):
   Completed_with_No_Error = 0
   Not_Supported = 1
   Failed = 2
