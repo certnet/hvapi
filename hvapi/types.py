@@ -23,10 +23,12 @@ THE SOFTWARE.
 """
 from enum import Enum
 
+from hvapi.common_types import RangedCodeEnum
+
 
 class VirtualMachineGeneration(str, Enum):
-  GEN1 = "1"
-  GEN2 = "2"
+  GEN1 = "Microsoft:Hyper-V:SubType:1"
+  GEN2 = "Microsoft:Hyper-V:SubType:2"
 
 
 class VirtualMachineState(int, Enum):
@@ -36,3 +38,14 @@ class VirtualMachineState(int, Enum):
   SAVED = 2
   PAUSED = 3
   ERROR = 4
+
+
+class ComPort(int, Enum):
+  COM1 = 0
+  COM2 = 1
+
+
+class DiskType(RangedCodeEnum):
+  Fixed = 2
+  Dynamic = 3
+  Differencing = 4

@@ -1,11 +1,9 @@
 import clr
 import collections
-import time
+import xml.etree.ElementTree as ET
 from enum import Enum
 from typing import Tuple, Callable, Iterable, Union, List, Any, Sized
 
-from hvapi.clr_types import Msvm_ConcreteJob_JobState, VSMS_AddResourceSettings_ReturnCode
-from hvapi.clr_types import VSMS_ModifySystemSettings_ReturnCode, VSMS_ModifyResourceSettings_ReturnCode
 from hvapi.common_types import RangedCodeEnum
 
 clr.AddReference("System.Management")
@@ -51,8 +49,23 @@ class CimTypeTransformer(object):
 
 class MOHTransformers(object):
   @staticmethod
-  def from_reference(object_reference, parent: 'ManagementObjectHolder'):
+  def from_reference(object_reference, parent: 'ManagementObjectHolder') -> 'ManagementObjectHolder':
     return ManagementObjectHolder(ManagementObject(object_reference), parent.scope_holder)
+
+  @staticmethod
+  def from_xml(object_xml, parent: 'ManagementObjectHolder') -> 'ManagementObjectHolder':
+    root = ET.fromstring(object_xml)
+    class_name = root.attrib['CLASSNAME']
+    class_instance = parent.scope_holder.cls_instance(class_name)
+    for property_element in root.findall('PROPERTY'):
+      property_name = property_element.attrib['NAME']
+      property_type = property_element.attrib['TYPE']
+      property_value = None
+      value_element = property_element.find('VALUE')
+      if value_element is not None:
+        property_value = value_element.text
+      class_instance.management_object.Properties[property_name].Value = property_value
+    return class_instance
 
 
 class Relation(int, Enum):
@@ -267,7 +280,7 @@ class ManagementObjectHolder(object):
 
     if isinstance(obj, (str, String)):
       if expected_type == String:
-        return String
+        return String(obj)
 
     raise Exception("Unknown object to transform: '%s'" % obj)
 
@@ -336,7 +349,8 @@ class ManagementObjectHolder(object):
   def _evaluate_invocation_result(result, codes_enum: RangedCodeEnum, ok_value, job_value):
     return_value = codes_enum.from_code(result['ReturnValue'])
     if return_value == job_value:
-      ConcreteJob.from_moh(result['Job']).wait()
+      from hvapi.clr.classes_wrappers import JobWrapper
+      JobWrapper.from_moh(result['Job']).wait()
       return result
     if return_value != ok_value:
       raise InvocationException("Failed execute method with return value '%s'" % return_value.name)
@@ -344,69 +358,8 @@ class ManagementObjectHolder(object):
 
   @staticmethod
   def _create_cls_from_moh(cls, cls_name, moh):
-    if moh.management_object.ClassPath.ClassName != cls_name:
+    if moh.management_object.ClassPath.ClassName not in cls_name:
       raise ValueError('Given ManagementObject is not %s' % cls_name)
     return cls(moh.management_object, moh.scope_holder)
 
 
-class ConcreteJob(ManagementObjectHolder):
-  def wait(self):
-    job_state = Msvm_ConcreteJob_JobState.from_code(self.properties['JobState'])
-    while job_state not in [Msvm_ConcreteJob_JobState.Completed, Msvm_ConcreteJob_JobState.Terminated,
-                            Msvm_ConcreteJob_JobState.Killed, Msvm_ConcreteJob_JobState.Exception]:
-      job_state = Msvm_ConcreteJob_JobState.from_code(self.properties['JobState'])
-      self.reload()
-      time.sleep(.1)
-    if job_state != Msvm_ConcreteJob_JobState.Completed:
-      raise JobException(self)
-
-  @classmethod
-  def from_moh(cls, moh: 'ManagementObjectHolder') -> 'ConcreteJob':
-    return cls._create_cls_from_moh(cls, 'Msvm_ConcreteJob', moh)
-
-
-class VirtualSystemManagementService(ManagementObjectHolder):
-  def ModifyResourceSettings(self, *args):
-    out_objects = self.invoke("ModifyResourceSettings", ResourceSettings=args)
-    return self._evaluate_invocation_result(
-      out_objects,
-      VSMS_ModifyResourceSettings_ReturnCode,
-      VSMS_ModifyResourceSettings_ReturnCode.Completed_with_No_Error,
-      VSMS_ModifyResourceSettings_ReturnCode.Method_Parameters_Checked_Job_Started
-    )
-
-  def ModifySystemSettings(self, SystemSettings):
-    out_objects = self.invoke("ModifySystemSettings", SystemSettings=SystemSettings)
-    return self._evaluate_invocation_result(
-      out_objects,
-      VSMS_ModifySystemSettings_ReturnCode,
-      VSMS_ModifySystemSettings_ReturnCode.Completed_with_No_Error,
-      VSMS_ModifySystemSettings_ReturnCode.Method_Parameters_Checked_Job_Started
-    )
-
-  def AddResourceSettings(self, AffectedConfiguration, *args):
-    out_objects = self.invoke("AddResourceSettings", AffectedConfiguration=AffectedConfiguration, ResourceSettings=args)
-    return self._evaluate_invocation_result(
-      out_objects,
-      VSMS_AddResourceSettings_ReturnCode,
-      VSMS_AddResourceSettings_ReturnCode.Completed_with_No_Error,
-      VSMS_AddResourceSettings_ReturnCode.Method_Parameters_Checked_Job_Started
-    )
-
-    """ResourceSettings=[], ReferenceConfiguration=None,
-    #                                                     SystemSettings
-    """
-
-  def DefineSystem(self, SystemSettings, ResourceSettings=[], ReferenceConfiguration=None):
-    out_objects = self.invoke("DefineSystem", SystemSettings=SystemSettings, ResourceSettings=ResourceSettings,
-                              ReferenceConfiguration=ReferenceConfiguration)
-    return self._evaluate_invocation_result(
-      out_objects,
-      VSMS_AddResourceSettings_ReturnCode,
-      VSMS_AddResourceSettings_ReturnCode.Completed_with_No_Error,
-      VSMS_AddResourceSettings_ReturnCode.Method_Parameters_Checked_Job_Started
-    )
-
-  @classmethod
-  def from_holder(cls, moh: 'ManagementObjectHolder') -> 'VirtualSystemManagementService':
-    return cls._create_cls_from_moh(cls, 'Msvm_VirtualSystemManagementService', moh)

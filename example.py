@@ -26,7 +26,7 @@ import logging
 
 import sys
 
-from hvapi.hyperv import HypervHost
+from hvapi.aio_hyperv import HypervHost
 
 if sys.platform == 'win32':
   loop = asyncio.ProactorEventLoop()

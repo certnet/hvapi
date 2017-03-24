@@ -211,3 +211,23 @@ class VSMS_AddResourceSettings_ReturnCode(RangedCodeEnum):
   Method_Parameters_Checked_Job_Started = 4096
   Method_Reserved = (4097, 32767)
   Vendor_Specific = (32768, 65535)
+
+
+class MIMS_GetVirtualHardDiskSettingData_ReturnCode(RangedCodeEnum):
+  """
+  Msvm_ImageManagementService GetVirtualHardDiskSettingData method return codes.
+  """
+  Completed_with_No_Error = 0
+  Method_Parameters_Checked_Job_Started = 4096
+  Failed = 32768
+  Access_Denied = 32769
+  Not_Supported = 32770
+  Status_is_unknown = 32771
+  Timeout = 32772
+  Invalid_parameter = 32773
+  System_is_in_use = 32774
+  Invalid_state_for_this_operation = 2775
+  Incorrect_data_type = 32776
+  System_is_not_available = 32777
+  Out_of_memory = 32778
+  File_not_found = 32779
