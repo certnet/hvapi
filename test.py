@@ -1,6 +1,8 @@
 import logging
+from queue import Queue
 
 from hvapi.clr.base import Node, Relation, VirtualSystemSettingDataNode, Property, MOHTransformers
+from hvapi.disk.vhd import VHDDisk
 from hvapi.hyperv import HypervHost
 
 FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
@@ -13,8 +15,10 @@ path = (
   Node(Relation.PROPERTY, "HostResource", (Property.ARRAY, MOHTransformers.from_reference))
 )
 hv_host = HypervHost()
-image = hv_host.open_disk("F:/hyper-v-disks/centos6.8.vhdx")
-print(image.type)
+image = VHDDisk(r"F:\hyper-v-disks\centos6.8.vhdx")
+print(image.properties)
+image.clone(r"F:\hyper-v-disks\centos6.8-clone.vhdx")
+
 # settings = {
 #   "Msvm_MemorySettingData": {
 #     "DynamicMemoryEnabled": True,

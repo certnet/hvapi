@@ -30,22 +30,13 @@ from hvapi.clr.types import ComputerSystem_RequestStateChange_RequestedState, \
   ShutdownComponent_ShutdownComponent_ReturnCodes
 from hvapi.clr.base import ScopeHolder, ManagementObjectHolder, Node, Relation, \
   VirtualSystemSettingDataNode, Property, MOHTransformers, PropertySelector, generate_guid, clr_Array, clr_String
-from hvapi.clr.classes_wrappers import VirtualSystemManagementService, ImageManagementService
-from hvapi.types import VirtualMachineGeneration, VirtualMachineState, ComPort, DiskType
+from hvapi.clr.classes_wrappers import VirtualSystemManagementService
+from hvapi.disk.vhd import VHDDisk
+from hvapi.types import VirtualMachineGeneration, VirtualMachineState, ComPort
 
 _CLS_MAP_PRIORITY = {
   "Msvm_VirtualSystemSettingData": 0
 }
-
-
-class VHDDisk(ManagementObjectHolder):
-  @property
-  def type(self) -> DiskType:
-    return DiskType.from_code(self.properties.Type)
-
-  @classmethod
-  def from_moh(cls, moh: ManagementObjectHolder) -> 'VHDDisk':
-    return cls._create_cls_from_moh(cls, 'Msvm_VirtualHardDiskSettingData', moh)
 
 
 class VirtualSwitch(ManagementObjectHolder):
@@ -502,7 +493,6 @@ class HypervHost(object):
     management_service = VirtualSystemManagementService.from_moh(
       self.scope.query_one('SELECT * FROM Msvm_VirtualSystemManagementService')
     )
-    # TODO machine cleanup in case of errors
     Msvm_VirtualSystemSettingData = self.scope.cls_instance("Msvm_VirtualSystemSettingData")
     Msvm_VirtualSystemSettingData.properties.ElementName = name
     Msvm_VirtualSystemSettingData.properties.VirtualSystemSubType = machine_generation.value
@@ -510,10 +500,3 @@ class HypervHost(object):
     vm = VirtualMachine.from_moh(result['ResultingSystem'])
     vm.apply_properties_group(properties_group)
     return vm
-
-  def open_disk(self, path):
-    image_service = ImageManagementService.from_moh(
-      self.scope.query_one('SELECT * FROM Msvm_ImageManagementService')
-    )
-    result = image_service.GetVirtualHardDiskSettingData(Path=path)
-    return VHDDisk.from_moh(MOHTransformers.from_xml(str(result['SettingData']), image_service))

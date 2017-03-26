@@ -63,18 +63,3 @@ class VirtualSystemManagementService(ManagementObjectHolder):
   @classmethod
   def from_moh(cls, moh: 'ManagementObjectHolder') -> 'VirtualSystemManagementService':
     return cls._create_cls_from_moh(cls, 'Msvm_VirtualSystemManagementService', moh)
-
-
-class ImageManagementService(ManagementObjectHolder):
-  def GetVirtualHardDiskSettingData(self, Path):
-    out_objects = self.invoke("GetVirtualHardDiskSettingData", Path=Path)
-    return self._evaluate_invocation_result(
-      out_objects,
-      MIMS_GetVirtualHardDiskSettingData_ReturnCode,
-      MIMS_GetVirtualHardDiskSettingData_ReturnCode.Completed_with_No_Error,
-      MIMS_GetVirtualHardDiskSettingData_ReturnCode.Method_Parameters_Checked_Job_Started
-    )
-
-  @classmethod
-  def from_moh(cls, moh: ManagementObjectHolder) -> 'ImageManagementService':
-    return cls._create_cls_from_moh(cls, 'Msvm_ImageManagementService', moh)
