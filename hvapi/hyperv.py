@@ -38,6 +38,7 @@ from hvapi.types import VirtualMachineGeneration, VirtualMachineState, ComPort
 _CLS_MAP_PRIORITY = {
   "Msvm_VirtualSystemSettingData": 0
 }
+DEFAULT_WAIT_OP_TIMEOUT = 60
 
 
 class VirtualSwitch(ManagementObjectHolder):
@@ -125,9 +126,6 @@ class VirtualComPort(ManagementObjectHolder):
   @classmethod
   def from_moh(cls, moh: ManagementObjectHolder) -> 'VirtualComPort':
     return cls._create_cls_from_moh(cls, 'Msvm_SerialPortSettingData', moh)
-
-
-DEFAULT_WAIT_OP_TIMEOUT = 60
 
 
 class ShutdownComponent(ManagementObjectHolder):

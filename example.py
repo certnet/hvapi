@@ -25,8 +25,9 @@ import asyncio
 import logging
 
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
-from hvapi.aio_hyperv import HypervHost
+from hvapi.aio_hyperv import HypervHost, AioHypervHost
 
 if sys.platform == 'win32':
   loop = asyncio.ProactorEventLoop()
@@ -35,36 +36,19 @@ if sys.platform == 'win32':
 FORMAT = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 logging.basicConfig(format=FORMAT, level=logging.DEBUG)
 
+executor = ThreadPoolExecutor(max_workers=1)
 
-async def main_coro():
-  host = HypervHost()
-  switch = (await host.switches_by_name("internal"))[0]
-  settings = {
-    "Msvm_MemorySettingData": {
-      "DynamicMemoryEnabled": True,
-      "Limit": 4096,
-      "Reservation": 2048,
-      "VirtualQuantity": 2048
-    },
-    "Msvm_ProcessorSettingData": {
-      "VirtualQuantity": 8
-    },
-    "Msvm_VirtualSystemSettingData": {
-      "VirtualNumaEnabled ": False
-    }
-  }
-  machine = (await host.machines_by_name("test_machine"))[0]
-  print(await machine.state)
-  pass
-  pass
-  # adapter = await machine.connect_to_switch(switch, static_mac="00:11:22:33:44:55")
-  # print(await adapter.address)
-  # hello_machine = (await host.machines_by_name("centos6.8"))[0]
-  # print(await hello_machine.state)
-
-  # await hello_machine.apply_properties_group(settings)
 
 loop = asyncio.get_event_loop()
+
+async def main_coro():
+  host = AioHypervHost(HypervHost(), executor, loop)
+  hello_machine = (await host.machines_by_name("hello"))[-1]
+  com_ports = await hello_machine.get_com_ports()
+  await com_ports[0].set_path("\\\\.\\pipe\\hello_com1")
+  pass
+
+
 loop.run_until_complete(main_coro())
 loop.close()
 
