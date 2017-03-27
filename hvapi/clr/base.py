@@ -131,6 +131,16 @@ def PropertySelector(property_name, expected_value):
   return _sel
 
 
+def ListPropertySelector(properties):
+  def _sel(obj):
+    for property_name, expected_value in properties:
+      if str(obj.properties[property_name]) != str(expected_value):
+        return False
+    return True
+
+  return _sel
+
+
 class ScopeHolder(object):
   def __init__(self, namespace=r"\\.\root\virtualization\v2"):
     self.scope = ManagementScope(namespace)
@@ -212,7 +222,26 @@ class ManagementObjectHolder(object):
     return result
 
   def traverse(self, traverse_path: Iterable[Node]) -> List[List['ManagementObjectHolder']]:
+    """
+    Traverse through management object hierarchy based on given path.
+    Return all found path from given object to target object.
+
+    :param traverse_path:
+    :return: list of found paths
+    """
     return self._internal_traversal(traverse_path, self)
+
+  def get_child(self, traverse_path: Iterable[Node]):
+    """
+    Get one child item from given path.
+
+    :param traverse_path:
+    :return:
+    """
+    traverse_result = self.traverse(traverse_path)
+    if len(traverse_result) > 1:
+      raise Exception("Found more that one child for given path")
+    return traverse_result[-1][-1]
 
   def invoke(self, method_name, **kwargs):
     parameters = self.management_object.GetMethodParameters(method_name)
@@ -248,6 +277,9 @@ class ManagementObjectHolder(object):
           _property_value = self._transform_object(_property.Value, _property_type)
       transformed_result[_property.Name] = _property_value
     return transformed_result
+
+  def clone(self):
+    return ManagementObjectHolder(self.management_object.Clone(), self.scope_holder)
 
   def __str__(self):
     return str(self.management_object)
@@ -361,5 +393,3 @@ class ManagementObjectHolder(object):
     if moh.management_object.ClassPath.ClassName not in cls_name:
       raise ValueError('Given ManagementObject is not %s' % cls_name)
     return cls(moh.management_object, moh.scope_holder)
-
-

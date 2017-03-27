@@ -29,7 +29,8 @@ from hvapi.clr.types import ComputerSystem_RequestStateChange_RequestedState, \
   ComputerSystem_RequestStateChange_ReturnCodes, ComputerSystem_EnabledState, ShutdownComponent_OperationalStatus, \
   ShutdownComponent_ShutdownComponent_ReturnCodes
 from hvapi.clr.base import ScopeHolder, ManagementObjectHolder, Node, Relation, \
-  VirtualSystemSettingDataNode, Property, MOHTransformers, PropertySelector, generate_guid, clr_Array, clr_String
+  VirtualSystemSettingDataNode, Property, MOHTransformers, PropertySelector, generate_guid, clr_Array, clr_String, \
+  ListPropertySelector
 from hvapi.clr.classes_wrappers import VirtualSystemManagementService
 from hvapi.disk.vhd import VHDDisk
 from hvapi.types import VirtualMachineGeneration, VirtualMachineState, ComPort
@@ -87,25 +88,16 @@ class VirtualNetworkAdapter(ManagementObjectHolder):
       self.scope_holder.query_one('SELECT * FROM Msvm_VirtualSystemManagementService')
     )
     Msvm_VirtualSystemSettingData = self.traverse((Node(Relation.RELATED, "Msvm_VirtualSystemSettingData"),))[-1][-1]
-    Msvm_ResourcePool = self.scope_holder.query_one(
-      "SELECT * FROM Msvm_ResourcePool WHERE ResourceSubType = 'Microsoft:Hyper-V:Ethernet Connection' "
-      "AND Primordial = True"
-    )
+    Msvm_ResourcePool = self.scope_holder.query_one("SELECT * FROM Msvm_ResourcePool WHERE ResourceSubType = 'Microsoft:Hyper-V:Ethernet Connection' AND Primordial = True")
     Msvm_EthernetPortAllocationSettingData_Path = (
-      Node(Relation.RELATED,
-           ("Msvm_AllocationCapabilities", "Msvm_ElementCapabilities", None, None, None, None, False, None)),
+      Node(Relation.RELATED, ("Msvm_AllocationCapabilities", "Msvm_ElementCapabilities", None, None, None, None, False, None)),
       Node(Relation.RELATIONSHIP, "Msvm_SettingsDefineCapabilities", selector=PropertySelector('ValueRole', 0)),
       Node(Relation.PROPERTY, "PartComponent", (Property.SINGLE, MOHTransformers.from_reference))
     )
-    Msvm_EthernetPortAllocationSettingData = Msvm_ResourcePool.traverse(
-      Msvm_EthernetPortAllocationSettingData_Path
-    )[-1][-1]
+    Msvm_EthernetPortAllocationSettingData = Msvm_ResourcePool.traverse(Msvm_EthernetPortAllocationSettingData_Path)[-1][-1]
     Msvm_EthernetPortAllocationSettingData.properties.Parent = self.management_object
     Msvm_EthernetPortAllocationSettingData.properties.HostResource = [virtual_switch.management_object]
-    management_service.AddResourceSettings(
-      Msvm_VirtualSystemSettingData,
-      Msvm_EthernetPortAllocationSettingData
-    )
+    management_service.AddResourceSettings(Msvm_VirtualSystemSettingData, Msvm_EthernetPortAllocationSettingData)
 
   @classmethod
   def from_moh(cls, moh: ManagementObjectHolder) -> 'VirtualNetworkAdapter':
@@ -330,15 +322,12 @@ class VirtualMachine(ManagementObjectHolder):
       "AND Primordial = True"
     )
     Msvm_SyntheticEthernetPortSettingData_Path = (
-      Node(Relation.RELATED,
-           ("Msvm_AllocationCapabilities", "Msvm_ElementCapabilities", None, None, None, None, False, None)),
+      Node(Relation.RELATED, ("Msvm_AllocationCapabilities", "Msvm_ElementCapabilities", None, None, None, None, False, None)),
       Node(Relation.RELATIONSHIP, "Msvm_SettingsDefineCapabilities", selector=PropertySelector('ValueRole', 0)),
       Node(Relation.PROPERTY, "PartComponent", (Property.SINGLE, MOHTransformers.from_reference))
     )
     Msvm_VirtualSystemSettingData = self.traverse((VirtualSystemSettingDataNode,))[-1][-1]
-    Msvm_SyntheticEthernetPortSettingData = Msvm_ResourcePool.traverse(
-      Msvm_SyntheticEthernetPortSettingData_Path
-    )[-1][-1]
+    Msvm_SyntheticEthernetPortSettingData = Msvm_ResourcePool.traverse(Msvm_SyntheticEthernetPortSettingData_Path)[-1][-1]
     Msvm_SyntheticEthernetPortSettingData.properties.VirtualSystemIdentifiers = clr_Array[clr_String]([generate_guid()])
     Msvm_SyntheticEthernetPortSettingData.properties.ElementName = adapter_name
     Msvm_SyntheticEthernetPortSettingData.properties.StaticMacAddress = static_mac
@@ -367,7 +356,39 @@ class VirtualMachine(ManagementObjectHolder):
 
     :param vhd_disk: ``VHDDisk`` to add to machine
     """
-    pass
+    # TODO ability to select controller, disk port, error checking. Make disk bootable by default, etc
+    management_service = VirtualSystemManagementService.from_moh(self.scope_holder.query_one('SELECT * FROM Msvm_VirtualSystemManagementService'))
+    Msvm_VirtualSystemSettingData = self.get_child((VirtualSystemSettingDataNode,))
+    Msvm_ResourcePool_SyntheticDiskDrive = self.scope_holder.query_one("SELECT * FROM Msvm_ResourcePool WHERE ResourceSubType = 'Microsoft:Hyper-V:Synthetic Disk Drive' AND Primordial = True")
+    Msvm_StorageAllocationSettingData_Path = (
+      Node(Relation.RELATED, ("Msvm_AllocationCapabilities", "Msvm_ElementCapabilities", None, None, None, None, False, None)),
+      Node(Relation.RELATIONSHIP, "Msvm_SettingsDefineCapabilities", selector=PropertySelector('ValueRole', 0)),
+      Node(Relation.PROPERTY, "PartComponent", (Property.SINGLE, MOHTransformers.from_reference))
+    )
+    IdeController_Path = (
+      Node(
+        Relation.RELATED,
+        "Msvm_ResourceAllocationSettingData",
+        selector=ListPropertySelector((('ResourceType', 5), ('ResourceSubType', 'Microsoft:Hyper-V:Emulated IDE Controller'), ('Address', 0),))
+      ),
+    )
+    IdeController = Msvm_VirtualSystemSettingData.get_child(IdeController_Path)
+    Msvm_StorageAllocationSettingData = Msvm_ResourcePool_SyntheticDiskDrive.get_child(Msvm_StorageAllocationSettingData_Path).clone()
+
+    Msvm_StorageAllocationSettingData.properties.Parent = IdeController.management_object
+    Msvm_StorageAllocationSettingData.properties.AddressOnParent = 0
+    synthetic_disk_drive = management_service.AddResourceSettings(Msvm_VirtualSystemSettingData, Msvm_StorageAllocationSettingData)['ResultingResourceSettings'][-1]
+
+    Msvm_ResourcePool_VirtualHardDisk = self.scope_holder.query_one("SELECT * FROM Msvm_ResourcePool WHERE ResourceSubType = 'Microsoft:Hyper-V:Virtual Hard Disk' AND Primordial = True")
+    virtual_hard_disk_path = (
+      Node(Relation.RELATED, ("Msvm_AllocationCapabilities", "Msvm_ElementCapabilities", None, None, None, None, False, None)),
+      Node(Relation.RELATIONSHIP, "Msvm_SettingsDefineCapabilities", selector=PropertySelector('ValueRole', 0)),
+      Node(Relation.PROPERTY, "PartComponent", (Property.SINGLE, MOHTransformers.from_reference))
+    )
+    virtual_hard_disk_data = Msvm_ResourcePool_VirtualHardDisk.get_child(virtual_hard_disk_path).clone()
+    virtual_hard_disk_data.properties.Parent = synthetic_disk_drive.management_object
+    virtual_hard_disk_data.properties.HostResource = [vhd_disk.disk_path]
+    management_service.AddResourceSettings(Msvm_VirtualSystemSettingData, virtual_hard_disk_data)
 
   @property
   def network_adapters(self) -> List[VirtualNetworkAdapter]:
@@ -479,20 +500,15 @@ class HypervHost(object):
     return [VirtualMachine.from_moh(_machine) for _machine in machines] if machines else []
 
   def machines_by_name(self, name) -> List[VirtualMachine]:
-    machines = self.scope.query(
-      'SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND ElementName = "%s"' % name)
+    machines = self.scope.query('SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND ElementName = "%s"' % name)
     return [VirtualMachine.from_moh(_machine) for _machine in machines] if machines else []
 
   def machine_by_id(self, machine_id) -> VirtualMachine:
-    machines = self.scope.query(
-      'SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND Name = "%s"' % machine_id)
+    machines = self.scope.query('SELECT * FROM Msvm_ComputerSystem WHERE Caption = "Virtual Machine" AND Name = "%s"' % machine_id)
     return [VirtualMachine.from_moh(_machine) for _machine in machines] if machines else []
 
-  def create_machine(self, name, properties_group: Dict[str, Dict[str, Any]] = None,
-                     machine_generation: VirtualMachineGeneration = VirtualMachineGeneration.GEN1) -> VirtualMachine:
-    management_service = VirtualSystemManagementService.from_moh(
-      self.scope.query_one('SELECT * FROM Msvm_VirtualSystemManagementService')
-    )
+  def create_machine(self, name, properties_group: Dict[str, Dict[str, Any]] = None, machine_generation: VirtualMachineGeneration = VirtualMachineGeneration.GEN1) -> VirtualMachine:
+    management_service = VirtualSystemManagementService.from_moh(self.scope.query_one('SELECT * FROM Msvm_VirtualSystemManagementService'))
     Msvm_VirtualSystemSettingData = self.scope.cls_instance("Msvm_VirtualSystemSettingData")
     Msvm_VirtualSystemSettingData.properties.ElementName = name
     Msvm_VirtualSystemSettingData.properties.VirtualSystemSubType = machine_generation.value

@@ -16,8 +16,10 @@ path = (
 )
 hv_host = HypervHost()
 image = VHDDisk(r"F:\hyper-v-disks\centos6.8.vhdx")
-print(image.properties)
-image.clone(r"F:\hyper-v-disks\centos6.8-clone.vhdx")
+hello_machine = hv_host.machines_by_name("hello")[-1]
+hello_machine.add_vhd_disk(image)
+# print(image.properties)
+# image.clone(r"F:\hyper-v-disks\centos6.8-clone.vhdx")
 
 # settings = {
 #   "Msvm_MemorySettingData": {
