@@ -56,7 +56,7 @@ class AioVirtualNetworkAdapter(object):
     return AioVirtualSwitch(await self.event_loop.run_in_executor(self.executor, lambda: self.main_object.switch), self.executor, self.event_loop)
 
   async def connect(self, virtual_switch: 'AioVirtualSwitch'):
-    await self.event_loop.run_in_executor(self.executor, self.main_object.connect, virtual_switch)
+    await self.event_loop.run_in_executor(self.executor, self.main_object.connect, virtual_switch.main_object)
 
 
 class AioVirtualComPort(object):
@@ -115,7 +115,7 @@ class AioVirtualMachine(object):
     return AioVirtualNetworkAdapter(await self.event_loop.run_in_executor(self.executor, self.main_object.add_adapter, static_mac, mac, adapter_name), self.executor, self.event_loop)
 
   async def is_connected_to_switch(self, virtual_switch: 'AioVirtualSwitch'):
-    await self.event_loop.run_in_executor(self.executor, self.main_object.is_connected_to_switch, virtual_switch)
+    await self.event_loop.run_in_executor(self.executor, self.main_object.is_connected_to_switch, virtual_switch.main_object)
 
   async def add_vhd_disk(self, vhd_disk: VHDDisk):
     await self.event_loop.run_in_executor(self.executor, self.main_object.add_vhd_disk, vhd_disk)
